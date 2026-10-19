@@ -8,6 +8,7 @@ import json
 import os
 import threading
 from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,7 @@ from .config import Config
 from .dicom import DicomMeta, is_dicom_bytes, is_dicom_candidate
 from .drive import DriveFile, DriveSource, FileCache
 from .errors import KneeError, RedactionFailed
+from .templates import load_templates
 from .redact import REDACTION_VERSION, Overlay, ocr_words, read_overlay, redact
 
 MAX_SLICES = 8
@@ -82,11 +84,19 @@ def _merge(tags: Overlay, ocr: Overlay) -> Overlay:
 class Processor:
     """Redacted images and overlay info, cached on disk by fileId + modifiedTime + redaction settings."""
 
-    def __init__(self, cfg: Config, source: DriveSource, files: FileCache, metas: DicomMetaStore) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        source: DriveSource,
+        files: FileCache,
+        metas: DicomMetaStore,
+        template_for: Callable[[DriveFile], list | None] | None = None,
+    ) -> None:
         self.cfg = cfg
         self.source = source
         self.files = files
         self.metas = metas
+        self.template_for = template_for or (lambda f: None)
         self.dir = cfg.cache_dir / "redacted"
         self.dir.mkdir(parents=True, exist_ok=True)
         salt = json.dumps([REDACTION_VERSION, cfg.ocr_langs, sorted(cfg.pii_terms)]).encode()
@@ -95,7 +105,30 @@ class Processor:
         self._guard = threading.Lock()
 
     def _key(self, f: DriveFile) -> str:
-        return hashlib.sha256(f"{f.id}|{f.modified_time}|{self._salt}".encode()).hexdigest()[:32]
+        template = json.dumps(self.template_for(f))
+        return hashlib.sha256(f"{f.id}|{f.modified_time}|{self._salt}|{template}".encode()).hexdigest()[:32]
+
+    def png_path(self, f: DriveFile) -> Path:
+        return self.dir / f"{self._key(f)}.png"
+
+    def status(self, f: DriveFile) -> str:
+        """"ok" / "failed" (withheld) / "todo" (not prebuilt yet)."""
+        meta = self.dir / f"{self._key(f)}.json"
+        if not meta.exists():
+            return "todo"
+        st = json.loads(meta.read_text("utf-8")).get("status")
+        if st == "ok" and self.png_path(f).exists():
+            return "ok"
+        return "failed" if st == "failed" else "todo"
+
+    def cached_overlay(self, f: DriveFile) -> Overlay | None:
+        """Overlay info without any download or OCR (None when the image has not been prebuilt)."""
+        if is_dicom_candidate(f):
+            return _tag_overlay(self.metas.get(f))
+        meta = self.dir / f"{self._key(f)}.json"
+        if not meta.exists():
+            return None
+        return Overlay(**json.loads(meta.read_text("utf-8"))["overlay"])
 
     def _lock(self, key: str) -> threading.Lock:
         with self._guard:
@@ -129,7 +162,7 @@ class Processor:
         status = json.loads(meta.read_text("utf-8")).get("status")
         return status == "failed" or (status == "ok" and (self.dir / f"{self._key(f)}.png").exists())
 
-    def redacted(self, f: DriveFile) -> tuple[Image.Image, Overlay]:
+    def redacted(self, f: DriveFile, raw: bytes | None = None) -> tuple[Image.Image, Overlay]:
         key = self._key(f)
         png, meta = self.dir / f"{key}.png", self.dir / f"{key}.json"
         with self._lock(key):
@@ -141,7 +174,8 @@ class Processor:
                     with Image.open(png) as im:
                         im.load()
                         return im.copy(), Overlay(**info["overlay"])
-            raw = self.files.get(self.source, f)
+            if raw is None:
+                raw = self.files.get(self.source, f)
             tags = Overlay("", "", "")
             source_img: bytes | Image.Image = raw
             if is_dicom_bytes(raw):
@@ -152,7 +186,7 @@ class Processor:
                 tags = _tag_overlay(dicom.read_meta(raw, self.cfg.pii_terms))
             del raw
             try:
-                img, ov = redact(source_img, self.cfg.ocr_langs, self.cfg.pii_terms)
+                img, ov = redact(source_img, self.cfg.ocr_langs, self.cfg.pii_terms, self.template_for(f))
                 ov = _merge(tags, ov)
             except RedactionFailed:
                 self._write(meta, json.dumps({"status": "failed", "overlay": Overlay("", "", "").__dict__}).encode())
@@ -182,7 +216,19 @@ class KneeService:
         self.catalog = Catalog(
             source, cfg.study_types, cfg.pii_terms, cfg.listing_ttl, cfg.exclude_folders, self._load_dicom_metas
         )
-        self.proc = Processor(cfg, source, files, self.metas)
+        self.templates = load_templates(cfg.mask_templates)
+        self._hosp_index: object = None
+        self._hosp_by_id: dict[str, str] = {}
+        self.proc = Processor(cfg, source, files, self.metas, self._template_for)
+
+    def _template_for(self, f: DriveFile) -> list | None:
+        """Mask template of the hospital the file's study belongs to (None: OCR-only masking)."""
+        idx = self.catalog.index()
+        if idx is not self._hosp_index:
+            self._hosp_by_id = {s.file.id: st.hospital for st in idx.studies for se in st.series.values() for s in se.slices}
+            self._hosp_index = idx
+        rects = self.templates.get(self._hosp_by_id.get(f.id, ""))
+        return [list(r) for r in rects] if rects else None
 
     def _load_dicom_metas(self, files: list[DriveFile]) -> dict[str, DicomMeta | None]:
         def one(f: DriveFile) -> DicomMeta | None:
@@ -219,19 +265,30 @@ class KneeService:
         return "\n".join(lines)
 
     def list_series(self, study: str) -> str:
+        """Summarized from prebuilt results only: no download, no OCR at request time."""
         st = self.catalog.index().get_study(study)
-        lines = [f"{st.id} ({st.kind})", "series | images | I range | plane (overlay OCR) | SL range"]
+        lines = [f"{st.id} ({st.kind})", "series | images | I range | plane | SL range | prebuilt"]
+        todo_total = 0
         for se in st.series.values():
-            # Plane from the middle image, SL range from the first and last images.
-            picks = [se.slices[0], se.slices[len(se.slices) // 2], se.slices[-1]]
-            ovs = list(self.pool.map(lambda s: self._safe_overlay(s.file), picks))
+            ovs = [self.proc.cached_overlay(s.file) for s in se.slices]
+            done = sum(1 for s in se.slices if self.proc.status(s.file) != "todo")
+            todo_total += len(se.slices) - done
             planes = Counter(o.plane for o in ovs if o and o.plane)
             plane = planes.most_common(1)[0][0] if planes else "?"
-            sls = [float(o.sl) for o in (ovs[0], ovs[-1]) if o and o.sl]
-            sl_range = f"{min(sls):g} .. {max(sls):g}" if len(sls) == 2 else (f"{sls[0]:g}" if sls else "?")
+            sls = []
+            for o in ovs:
+                if o and o.sl:
+                    try:
+                        sls.append(float(o.sl))
+                    except ValueError:
+                        pass
+            sl_range = f"{min(sls):g} .. {max(sls):g}" if len(sls) >= 2 else (f"{sls[0]:g}" if sls else "?")
             lines.append(
-                f"S{se.number} | {len(se.slices)} | I{se.slices[0].index:04d}-I{se.slices[-1].index:04d} | {plane} | {sl_range}"
+                f"S{se.number} | {len(se.slices)} | I{se.slices[0].index:04d}-I{se.slices[-1].index:04d}"
+                f" | {plane} | {sl_range} | {done}/{len(se.slices)}"
             )
+        if todo_total:
+            lines.append(f"{todo_total} images not prebuilt yet; plane/SL fill in as `python -m knee_mcp.prebuild` runs")
         return "\n".join(lines)
 
     def _safe_overlay(self, f: DriveFile) -> Overlay | None:
@@ -294,8 +351,8 @@ class KneeService:
         if state == "ok":
             return val  # type: ignore[return-value]
         if state == "pending":
-            raise KneeError(f"{label} is still being masked (the first view of an image can take up to a minute "
-                            "on this server); call again in about a minute")
+            raise KneeError(f"{label} is not prebuilt yet (queued for masking); "
+                            "try again in a few minutes, or run `python -m knee_mcp.prebuild`")
         if state == "withheld":
             raise RedactionFailed()
         raise KneeError(str(val))
@@ -314,7 +371,7 @@ class KneeService:
         if withheld:
             caption += f"; {withheld} withheld (redaction check failed)"
         if pending:
-            caption += f"; {pending} still being masked (tiles say 'masking...'); call get_contact_sheet again in a minute"
+            caption += f"; {pending} not prebuilt yet (tiles say 'masking...'); call get_contact_sheet again in a few minutes"
         return Rendered(imaging.to_png(sheet, self.cfg.max_png_bytes), caption)
 
     def _try_redacted(self, f: DriveFile) -> Image.Image | None:
@@ -357,8 +414,8 @@ class KneeService:
             else:
                 out.append(Rendered(b"", f"{st.id} S{se.number} {label}: {val}"))
         if pending:
-            out.append(Rendered(b"", f"still being masked: {', '.join(pending)}. The first view of an image can take "
-                                     "up to a minute on this server; call get_slices again for these in about a minute."))
+            out.append(Rendered(b"", f"not prebuilt yet (queued for masking): {', '.join(pending)}; "
+                                     "call get_slices again for these in a few minutes"))
         return out
 
     def compare(self, a: dict, b: dict) -> Rendered:
@@ -369,7 +426,7 @@ class KneeService:
         results = self._gather([sl.file for _, _, sl, _ in refs])
         pending = [f"{st.date} I{sl.index:04d}" for (st, _, sl, _), (state, _) in zip(refs, results) if state == "pending"]
         if pending:
-            raise KneeError(f"still being masked: {', '.join(pending)}; call compare again in about a minute")
+            raise KneeError(f"not prebuilt yet (queued for masking): {', '.join(pending)}; call compare again in a few minutes")
         imgs, labels = [], []
         for (st, se, sl, crop), (state, val) in zip(refs, results):
             if state == "withheld":
@@ -383,7 +440,59 @@ class KneeService:
         return Rendered(imaging.to_png(out, self.cfg.max_png_bytes), f"left: {labels[0]} | right: {labels[1]}")
 
     def warm(self) -> tuple[int, int]:
-        """Pre-redact everything (CLI `--warm`). Returns (ok, withheld)."""
-        files = [s.file for st in self.catalog.index(refresh=True).studies for se in st.series.values() for s in se.slices]
-        res = list(self.pool.map(self._try_redacted, files))
-        return sum(r is not None for r in res), sum(r is None for r in res)
+        """Back-compat for `--warm`: prebuild everything. Returns (ok, withheld)."""
+        m = self.prebuild()
+        return sum(e["redaction_status"] == "ok" for e in m), sum(e["redaction_status"] != "ok" for e in m)
+
+    def prebuild(self, progress: Callable[[str], None] | None = None, download_threads: int = 4) -> list[dict]:
+        """Mask every image ahead of time and write <cache>/manifest.json.
+
+        Incremental: images whose fileId + modifiedTime (and mask settings) were already processed are
+        skipped. Downloads run in parallel; OCR uses cfg.workers threads."""
+        say = progress or (lambda msg: None)
+        idx = self.catalog.index(refresh=True)
+        items = [(st, se, sl) for st in idx.studies for se in st.series.values() for sl in se.slices]
+        todo = [it for it in items if self.proc.status(it[2].file) == "todo"]
+        say(f"{len(items)} images, {len(items) - len(todo)} already prebuilt, {len(todo)} to do")
+
+        def fetch(it):
+            try:
+                return it, self.proc.files.get(self.proc.source, it[2].file), None
+            except Exception as e:  # noqa: BLE001 - reported per image via its status
+                return it, None, e
+
+        def work(entry) -> None:
+            it, raw, err = entry
+            if err is None:
+                try:
+                    self.proc.redacted(it[2].file, raw)
+                except (RedactionFailed, KneeError):
+                    pass
+
+        done = 0
+        chunk = max(download_threads * 2, self.cfg.workers * 2)
+        with ThreadPoolExecutor(max_workers=download_threads) as dl:
+            for start in range(0, len(todo), chunk):
+                fetched = list(dl.map(fetch, todo[start:start + chunk]))
+                list(self.pool.map(work, fetched))
+                done += len(fetched)
+                say(f"{done}/{len(todo)} processed")
+
+        manifest = []
+        for st, se, sl in items:
+            status = self.proc.status(sl.file)
+            ov = self.proc.cached_overlay(sl.file)
+            size = None
+            if status == "ok":
+                with Image.open(self.proc.png_path(sl.file)) as im:
+                    size = list(im.size)
+            manifest.append({
+                "study": st.id, "series": se.number, "index": sl.index,
+                "plane": ov.plane if ov else "", "sl": ov.sl if ov else "", "st": ov.st if ov else "",
+                "size": size, "fileId": sl.file.id, "modifiedTime": sl.file.modified_time,
+                "masked_path": f"redacted/{self.proc.png_path(sl.file).name}" if status == "ok" else None,
+                "redaction_status": "withheld" if status == "failed" else status,
+            })
+        Processor._write(self.cfg.cache_dir / "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=1).encode())
+        say("manifest.json written")
+        return manifest

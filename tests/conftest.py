@@ -66,7 +66,9 @@ class MockDrive:
 
 @pytest.fixture
 def cfg(tmp_path: Path) -> Config:
-    return Config(cache_dir=tmp_path / "cache", ocr_langs="eng", workers=4, exclude_folders=["匿名化"])
+    # On-demand masking allowed in tests (production default is 0: prebuilt only).
+    return Config(cache_dir=tmp_path / "cache", ocr_langs="eng", workers=4, exclude_folders=["匿名化"],
+                  tool_budget=600)
 
 
 @pytest.fixture

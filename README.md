@@ -54,15 +54,39 @@
 - 支援未壓縮、JPEG、JPEG-LS、JPEG 2000 壓縮（pylibjpeg）；MONOCHROME1 會自動反相；多影格 DICOM 只顯示第一格並列在 issues。無法解碼的檔案回報 `cannot decode this DICOM image`。
 - 同一張影像若同時有 DICOM 與 JPEG，保留 DICOM。
 
+## 離線前處理（prebuild）與 manifest
+
+工具在請求當下**不下載、不做 OCR**，只讀事先處理好的結果：
+
+```bash
+python -m knee_mcp.prebuild
+```
+
+- 掃描 Drive 全部影像，平行下載（4 執行緒），遮罩後存成 PNG 到 `<cache>/redacted/`。
+- 產生 `<cache>/manifest.json`：每張影像的 `study`、`series`、`index`、`plane`、`SL`、`ST`、`size`、`fileId`、`modifiedTime`、`masked_path`、`redaction_status`（`ok` / `withheld` / `todo`）。
+- 增量處理：fileId + modifiedTime（與遮罩設定）沒變的影像會跳過；上傳新檢查後重跑即可。
+- `list_series` 只彙整已處理的結果（多一欄 `prebuilt n/m`）；`get_slice`、`get_slices`、`compare`、`get_contact_sheet` 只讀快取 PNG 再 crop／zoom。
+- 還沒處理的影像直接回 `not prebuilt yet`，同時在背景排入遮罩，不會卡住請求。
+- crop 是對「已遮罩的整張圖」裁切，不會在裁切時重做任何檢查。
+
 ## 個資遮蔽（怎麼做、保證到什麼程度）
 
-採**白名單**、失敗即拒絕（fail closed）：
+**第一道：依醫院的固定遮罩範本。** 已知版面的醫院（目前 TSGH、VGHTPE），先把文字帶整塊塗黑。範本是依實際影像的文字框位置量出來的（只用座標，不看內容）：
+
+| 醫院 | 塗黑區域 |
+|---|---|
+| TSGH（2019） | 上方 0–20% 整條；左下 0–40% 寬、72% 以下；72–83% 高的置中文字列；最下方 94–100% 整條；左右兩側 44–57% 高的小標籤 |
+| VGHTPE（2024） | 上方 0–18% 整條；左下 0–40% 寬、70% 以下；74–82% 高的置中文字列；最下方 94–100% 整條 |
+
+範本塗黑後，影像上的 SL、ST 等文字也一起消失；這些參數在塗黑**之前**用 OCR 讀出，放進 manifest 與每張圖的說明文字。沒有範本的醫院（例如 2018、2023 年的 X 光）只用下面的 OCR 方式。
+
+**第二道：OCR 白名單遮蔽與驗證**，採**白名單**、失敗即拒絕（fail closed）：
 
 1. 用 Tesseract（psm 11、正片與負片各跑一次、放大）找出所有文字框。
 2. 只保留：方向字母 `R/L/A/P/S/I`、切面／序列字（`COR`、`SAG`、`AX`、`PD`、`T1`、`T2`、`FS`、`STIR`…）、技術參數鍵（`SL`、`ST`、`TR`、`TE`、`FOV`…）以及緊接在參數鍵後面的短數字（如 `SL -12.5`）。**其他文字框全部塗黑**（含邊界留白），所以不需要「認得」姓名或病歷號；中文字一律遮蔽。
    - 影像四周邊緣區域：任何非白名單文字都遮。
-   - 中央解剖區：只遮信心度 ≥ 60 的 2 字以上文字，或 4 位數以上的數字串，以免把骨頭紋理誤認成文字而塗黑。
-3. 遮完再跑一輪遮蔽，接著做**最終 OCR 驗證**：只要還有 3 字以上的非白名單文字、4 位數以上數字串、中文字，或 `KNEE_PII_TERMS` 中的任一字串，該張就**不回傳**，回報 `redaction check failed ... withheld`（contact sheet 中該格顯示 `withheld`）。
+   - 中央解剖區：沒有範本時，只遮信心度 ≥ 60 的 2 字以上文字或 4 位數以上數字串；**有範本時中央完全不遮**，只做驗證（之前在真實影像上，遮罩方塊的邊緣會被 OCR 誤讀成新文字，一路連鎖到誤擋）。
+3. 重複「OCR → 遮蔽」直到某一輪沒有新東西可遮（最多 6 輪），每輪都用 psm 11 與 psm 6 兩種模式、正片與負片各跑一次。最後一輪就是**最終驗證**：邊緣區只要有中文字、3 字以上非白名單文字、4 位數以上數字串，或 `KNEE_PII_TERMS` 中的任一字串，該張就**不回傳**（`redaction check failed ... withheld`）；中央解剖區門檻較高（信心度 ≥ 75，中文字要 2 字以上），避免紋理誤讀造成誤擋。
 4. 遮蔽結果快取在 `KNEE_CACHE_DIR/redacted/`，key 由 fileId、modifiedTime、遮蔽規則版本、OCR 語言、`KNEE_PII_TERMS` 組成；規則或設定變了就會自動重算。
 
 **建議**：設定 `KNEE_PII_TERMS`（姓名的中英文、病歷號、生日的幾種寫法，逗號分隔）當作額外保險；這個值只存在本機環境變數，不會出現在任何回應或日誌。第一次部署後請自己用 `get_slice` 看幾張 2019 影像確認。
@@ -128,7 +152,8 @@ python -m venv .venv
 | `KNEE_EXCLUDE_FOLDERS` | | 逗號分隔；資料夾名稱含其中任一字串就略過（例 `匿名化`） |
 | `KNEE_LISTING_TTL` | | Drive 清單快取秒數，預設 300 |
 | `KNEE_WORKERS` | | 平行處理數，預設 4 |
-| `KNEE_TOOL_BUDGET` | | 工具等待第一次遮蔽的秒數，預設 25；超過就先回傳已完成的圖，其餘標示「still being masked」並在背景繼續，稍後再呼叫即可 |
+| `KNEE_TOOL_BUDGET` | | 工具願意等「還沒 prebuild 的影像」幾秒，預設 0：直接回 `not prebuilt yet`，並在背景排入遮蔽 |
+| `KNEE_MASK_TEMPLATES` | | 覆寫各醫院的固定遮罩區域（JSON，比例座標），預設見 `knee_mcp/templates.py` |
 | `KNEE_LOCAL_DIR` | 開發用 | 設定後改讀本機資料夾（同 Drive 結構），不連 Drive |
 
 兩個都沒設（`KNEE_BEARER_TOKENS`、`KNEE_OWNER_PASSWORD`）時伺服器拒絕啟動。

@@ -64,7 +64,7 @@ def dcm_drive():
 
 @pytest.fixture
 def dcm_server(tmp_path, dcm_drive):
-    cfg = Config(cache_dir=tmp_path / "cache", ocr_langs="eng", workers=2)
+    cfg = Config(cache_dir=tmp_path / "cache", ocr_langs="eng", workers=2, tool_budget=600)
     return build_server(cfg, KneeService(cfg, dcm_drive))
 
 

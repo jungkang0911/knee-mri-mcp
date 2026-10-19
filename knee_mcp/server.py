@@ -190,17 +190,9 @@ def _load_dotenv(path: Path) -> None:
             os.environ.setdefault(k.strip(), v.strip().strip('"'))
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="knee-mcp")
-    parser.add_argument("--warm", action="store_true", help="pre-download and redact every image, then exit")
-    parser.add_argument("--gen-token", action="store_true", help="print a random bearer token and exit")
-    args = parser.parse_args(argv)
+def setup() -> Config:
+    """Logging, .env, Tesseract path and cache dir; shared by the server and `knee_mcp.prebuild`."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-
-    if args.gen_token:
-        print(secrets.token_urlsafe(32))
-        return 0
-
     _load_dotenv(Path(".env"))
     cfg = Config.from_env()
     if cfg.tesseract_cmd:
@@ -208,7 +200,10 @@ def main(argv: list[str] | None = None) -> int:
 
         pytesseract.pytesseract.tesseract_cmd = cfg.tesseract_cmd
     cfg.cache_dir.mkdir(parents=True, exist_ok=True)
+    return cfg
 
+
+def build_service(cfg: Config) -> KneeService:
     from .drive import LazyGoogleDrive, LocalFolderSource
 
     local_dir = os.environ.get("KNEE_LOCAL_DIR")
@@ -217,11 +212,25 @@ def main(argv: list[str] | None = None) -> int:
         source = LocalFolderSource(Path(local_dir))
     else:
         source = LazyGoogleDrive(cfg.root_folder_id, cfg.google_client_secrets, cfg.google_token_file)
-    service = KneeService(cfg, source)
-    if args.warm:
-        ok, withheld = service.warm()
-        print(f"redacted {ok} images; {withheld} withheld by the redaction check")
+    return KneeService(cfg, source)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="knee-mcp")
+    parser.add_argument("--warm", action="store_true", help="same as `python -m knee_mcp.prebuild`")
+    parser.add_argument("--gen-token", action="store_true", help="print a random bearer token and exit")
+    args = parser.parse_args(argv)
+
+    if args.gen_token:
+        print(secrets.token_urlsafe(32))
         return 0
+    if args.warm:
+        from .prebuild import main as prebuild_main
+
+        return prebuild_main()
+
+    cfg = setup()
+    service = build_service(cfg)
 
     import threading
 

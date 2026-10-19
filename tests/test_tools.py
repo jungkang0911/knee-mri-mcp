@@ -100,9 +100,10 @@ async def test_returned_2019_image_has_no_pii(server, index):
     text = _ocr_all(_png(r.content[0]))
     for token in FAKE_PII_TOKENS:
         assert token not in text, f"{token!r} survived redaction"
-    # Technical parameters normally stay readable; a label OCR misreads may be masked too (fail-safe),
-    # which is fine because the caption carries plane / SL / ST.
-    assert "ST" in text or "SL" in text
+    # TSGH uses a fixed mask template, so all overlay text (incl. SL / ST) is blacked out on the image;
+    # plane / SL / ST are read before masking and travel in the caption instead.
+    caption = r.content[1].text
+    assert "COR PD" in caption and "SL " in caption and "ST 3.0" in caption
 
 
 async def test_contact_sheet_has_no_pii(server):
@@ -114,7 +115,8 @@ async def test_contact_sheet_has_no_pii(server):
 
 
 async def test_image_withheld_when_masking_fails(server, monkeypatch):
-    monkeypatch.setattr(redact, "_mask", lambda img, words, flags: 0)  # simulate a masking miss
+    monkeypatch.setattr(redact, "_mask", lambda img, words, flags, **k: 0)  # simulate a masking miss
+    monkeypatch.setattr(redact, "apply_template", lambda img, rects: None)  # and no hospital template
     async with Client(server) as c:
         r = await c.call_tool("get_slice", {"study": "2019-03-20", "series": "7", "index": 5})
     assert r.is_error
@@ -219,7 +221,8 @@ def test_nonconforming_name_inferred_from_folders_and_listed():
     assert build_index([hidden], {}, [], ["匿名化"]).studies == []
 
 
-async def test_list_series_reads_overlay(server):
+async def test_list_series_reads_overlay(server, service):
+    service.prebuild()  # list_series only summarizes prebuilt results
     async with Client(server) as c:
         r = await c.call_tool("list_series", {"study": "2019-03-20"})
     row = [ln for ln in r.content[0].text.splitlines() if ln.startswith("S7 ")][0]

@@ -36,7 +36,7 @@ async def test_get_slices_returns_pending_then_images(tmp_path, drive):
         assert time.monotonic() - t < 3  # answered within the budget, not after all redactions
         assert not first.is_error
         texts = [x.text for x in first.content if x.type == "text"]
-        assert any("still being masked: I0001, I0002, I0003, I0004" in t for t in texts)
+        assert any("not prebuilt yet (queued for masking): I0001, I0002, I0003, I0004" in t for t in texts)
 
         for _ in range(60):  # background work keeps going after the first answer
             await asyncio.sleep(0.5)
@@ -44,7 +44,7 @@ async def test_get_slices_returns_pending_then_images(tmp_path, drive):
             if [x.type for x in again.content].count("image") == 4:
                 break
         assert [x.type for x in again.content].count("image") == 4
-        assert not any("still being masked" in x.text for x in again.content if x.type == "text")
+        assert not any("not prebuilt" in x.text for x in again.content if x.type == "text")
 
 
 async def test_get_slice_and_compare_say_still_masking(tmp_path, drive):
@@ -54,8 +54,8 @@ async def test_get_slice_and_compare_say_still_masking(tmp_path, drive):
         r = await c.call_tool("get_slice", {"study": "2019-03-20", "series": "7", "index": 9})
         cmp = await c.call_tool("compare", {"a": {"study": "2019-03-20", "series": "7", "index": 10},
                                             "b": {"study": "2024-12-03", "series": "4", "index": 1}})
-    assert r.is_error and "still being masked" in r.content[0].text and "call again" in r.content[0].text
-    assert cmp.is_error and "still being masked" in cmp.content[0].text
+    assert r.is_error and "not prebuilt yet" in r.content[0].text
+    assert cmp.is_error and "not prebuilt yet" in cmp.content[0].text
 
 
 async def test_contact_sheet_marks_pending_tiles(tmp_path, drive):
@@ -64,7 +64,7 @@ async def test_contact_sheet_marks_pending_tiles(tmp_path, drive):
     async with Client(server) as c:
         r = await c.call_tool("get_contact_sheet", {"study": "2024-12-03", "series": "4"})
     assert not r.is_error and r.content[0].type == "image"
-    assert "still being masked" in r.content[1].text
+    assert "not prebuilt yet" in r.content[1].text
 
 
 async def test_cached_images_do_not_wait_behind_slow_jobs(tmp_path, drive):

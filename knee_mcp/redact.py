@@ -18,8 +18,9 @@ from dataclasses import dataclass
 from PIL import Image, ImageDraw, ImageOps
 
 from .errors import RedactionFailed
+from .templates import Rect, apply_template
 
-REDACTION_VERSION = "5"
+REDACTION_VERSION = "6"
 MAX_MASK_PASSES = 6
 
 ORIENTATION = {"R", "L", "A", "P", "S", "I"}
@@ -42,6 +43,8 @@ _NUM_RE = re.compile(r"^[+-]?\d{1,3}(?:\.\d{1,2})?(?:MM|MS)?$")
 _KEYNUM_RE = re.compile(r"^(SL|ST|TR|TE|TI|FA|FOV|THK|SP)[:=]?[+-]?\d{1,4}(?:\.\d{1,2})?(?:MM|MS)?$")
 # Texture inside the anatomy OCRs as short low-confidence "words" (seen up to ~50); real overlay text is 80+.
 CENTRAL_CONF = 60
+# Verification floor inside the anatomy area: real overlay text scores 80+, texture misreads up to ~70.
+CENTRAL_VERIFY_CONF = 75
 _STRIP = ":;,=[](){}<>|'\"`*"
 _CJK_RE = re.compile(r"[　-鿿가-힯＀-￯]")
 
@@ -134,20 +137,29 @@ def _is_residual(word: Word, allowed: bool, size: tuple[int, int], pii_terms: li
     if any(t and t.lower() in text.lower() for t in pii_terms):
         return True
     a = _alnum(text)
-    if re.search(r"\d{4,}", a) and word.conf >= 30:
+    border = _is_border(word.box, size)
+    if re.search(r"\d{4,}", a) and word.conf >= (30 if border else CENTRAL_CONF):
         return True
-    floor = 50 if _is_border(word.box, size) else CENTRAL_CONF
-    if _CJK_RE.search(text) and word.conf >= floor:
+    floor = 50 if border else CENTRAL_VERIFY_CONF
+    cjk = len(_CJK_RE.findall(text))
+    # In the anatomy area a lone "CJK character" is texture noise (names are 2+ characters, and overlay
+    # text lives in the margins); at the edges any CJK counts.
+    if cjk and word.conf >= floor and (border or cjk >= 2 or word.conf >= 80):
         return True
     return len(a) >= 3 and word.conf >= floor
 
 
-def _mask(img: Image.Image, words: list[Word], flags: list[bool]) -> int:
+def _mask(img: Image.Image, words: list[Word], flags: list[bool], skip_center: bool = False) -> int:
+    """Black out maskable words. With a hospital template the text bands are already black, so the
+    anatomy area is only verified, never masked: masking there makes black-box edges that OCR then reads
+    as new "text", which cascaded into false redaction failures on real images."""
     draw = ImageDraw.Draw(img)
     fill = 0 if img.mode in ("L", "1", "I", "F") else (0,) * len(img.getbands())
     n = 0
     for w, ok in zip(words, flags):
         if not _should_mask(w, ok, img.size):
+            continue
+        if skip_center and not _is_border(w.box, img.size):
             continue
         x0, y0, x1, y1 = w.box
         hgt = max(4, y1 - y0)
@@ -190,7 +202,10 @@ def read_overlay(words: list[Word]) -> Overlay:
 
 
 def redact(
-    raw: bytes | Image.Image, langs: str = "eng", pii_terms: list[str] | None = None
+    raw: bytes | Image.Image,
+    langs: str = "eng",
+    pii_terms: list[str] | None = None,
+    template: list[Rect] | None = None,
 ) -> tuple[Image.Image, Overlay]:
     """Return (masked image, overlay info). Raises RedactionFailed if identifying text survives."""
     terms = pii_terms or []
@@ -202,12 +217,16 @@ def redact(
     img = src.convert("L") if src.mode not in ("L", "RGB") else src.copy()
 
     words = ocr_words(img, langs)
-    overlay = read_overlay(words)
+    overlay = read_overlay(words)  # plane / SL / ST are read before anything is blacked out
+    if template:
+        # Known overlay layout: black out the text bands first, then let OCR handle whatever is left.
+        apply_template(img, template)
+        words = ocr_words(img, langs)
     # Some text (e.g. a name squeezed against the image edge next to other text) only becomes legible
     # once its neighbours are masked, so keep OCR-ing and masking until a pass finds nothing new.
     final = words
     for _ in range(MAX_MASK_PASSES):
-        if _mask(img, final, _allowed_flags(final)) == 0:
+        if _mask(img, final, _allowed_flags(final), skip_center=bool(template)) == 0:
             break  # image unchanged since `final` was read: it doubles as the verification pass
         final = ocr_words(img, langs)
     flags = _allowed_flags(final)
