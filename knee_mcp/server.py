@@ -172,6 +172,13 @@ def make_app(cfg: Config, service: KneeService):
     return mcp.streamable_http_app(stateless_http=True, transport_security=security, host=cfg.host)
 
 
+def _safe_warm_index(service: KneeService) -> None:
+    try:
+        service.catalog.index()
+    except Exception as e:  # noqa: BLE001 - e.g. Drive not authorized yet; tools report it later
+        log.warning("initial Drive listing failed: %s", type(e).__name__)
+
+
 def _load_dotenv(path: Path) -> None:
     """Minimal .env support (KEY=VALUE lines); real environment variables win."""
     if not path.exists():
@@ -216,7 +223,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"redacted {ok} images; {withheld} withheld by the redaction check")
         return 0
 
+    import threading
+
     import uvicorn
+
+    # Build the Drive index right away so the first tool call does not wait ~15 s for it.
+    threading.Thread(target=lambda: _safe_warm_index(service), daemon=True).start()
 
     uvicorn.run(make_app(cfg, service), host=cfg.host, port=cfg.port, proxy_headers=True, forwarded_allow_ips="127.0.0.1")
     return 0

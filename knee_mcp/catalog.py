@@ -167,15 +167,35 @@ class Catalog:
         self.ttl = ttl
         self._index: Index | None = None
         self._at = 0.0
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # serializes rebuilds
+        self._refreshing = False
+
+    def _rebuild(self) -> Index:
+        with self._lock:
+            files = self.source.list_files()
+            metas = None
+            if self.dicom_loader:
+                metas = self.dicom_loader([f for f in files if is_dicom_candidate(f)])
+            self._index = build_index(files, self.study_types, self.pii_terms, self.exclude, metas)
+            self._at = time.monotonic()
+            return self._index
+
+    def _background_refresh(self) -> None:
+        try:
+            self._rebuild()
+        except Exception:  # noqa: BLE001 - keep serving the previous listing; next call retries
+            pass
+        finally:
+            self._refreshing = False
 
     def index(self, refresh: bool = False) -> Index:
-        with self._lock:
-            if refresh or self._index is None or time.monotonic() - self._at > self.ttl:
-                files = self.source.list_files()
-                metas = None
-                if self.dicom_loader:
-                    metas = self.dicom_loader([f for f in files if is_dicom_candidate(f)])
-                self._index = build_index(files, self.study_types, self.pii_terms, self.exclude, metas)
-                self._at = time.monotonic()
-            return self._index
+        """The current index. A stale index is returned immediately while a fresh one is built in the
+        background (listing Drive takes ~15 s), so tool calls never pay for the periodic refresh;
+        refresh=True (list_studies) or having no index yet builds synchronously."""
+        idx = self._index
+        if refresh or idx is None:
+            return self._rebuild()
+        if time.monotonic() - self._at > self.ttl and not self._refreshing:
+            self._refreshing = True
+            threading.Thread(target=self._background_refresh, daemon=True).start()
+        return idx

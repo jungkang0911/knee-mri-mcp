@@ -128,7 +128,7 @@ python -m venv .venv
 | `KNEE_EXCLUDE_FOLDERS` | | 逗號分隔；資料夾名稱含其中任一字串就略過（例 `匿名化`） |
 | `KNEE_LISTING_TTL` | | Drive 清單快取秒數，預設 300 |
 | `KNEE_WORKERS` | | 平行處理數，預設 4 |
-| `KNEE_TOOL_BUDGET` | | 工具等待第一次遮蔽的秒數，預設 40；超過就先回傳已完成的圖，其餘標示「still being masked」並在背景繼續，稍後再呼叫即可 |
+| `KNEE_TOOL_BUDGET` | | 工具等待第一次遮蔽的秒數，預設 25；超過就先回傳已完成的圖，其餘標示「still being masked」並在背景繼續，稍後再呼叫即可 |
 | `KNEE_LOCAL_DIR` | 開發用 | 設定後改讀本機資料夾（同 Drive 結構），不連 Drive |
 
 兩個都沒設（`KNEE_BEARER_TOKENS`、`KNEE_OWNER_PASSWORD`）時伺服器拒絕啟動。

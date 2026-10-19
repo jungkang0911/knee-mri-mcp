@@ -92,3 +92,27 @@ def test_duplicate_requests_share_one_job(tmp_path, drive):
     svc = _slow_service(tmp_path, drive, delay=1.0, budget=0.1)
     f = svc.catalog.index().get_study("2019-03-20").series[7].get(1).file
     assert svc._submit(f) is svc._submit(f)
+
+
+def test_stale_index_refreshes_in_background(tmp_path, drive):
+    cfg = Config(cache_dir=tmp_path / "cache", ocr_langs="eng", listing_ttl=0.0)
+    svc = KneeService(cfg, drive)
+    first = svc.catalog.index()
+    calls = []
+    real = drive.list_files
+
+    def slow_list():
+        calls.append(1)
+        time.sleep(1.5)
+        return real()
+
+    drive.list_files = slow_list
+    time.sleep(0.05)  # let the (coarse, ~15 ms on Windows) monotonic clock pass the TTL
+    t = time.monotonic()
+    again = svc.catalog.index()  # stale: must not block on the slow listing
+    assert again is first and time.monotonic() - t < 0.5
+    for _ in range(40):
+        time.sleep(0.1)
+        if svc.catalog._index is not first:
+            break
+    assert svc.catalog._index is not first and calls
