@@ -133,3 +133,17 @@ def test_template_redaction_leaves_anatomy_untouched(index):
         if diff.getpixel((x, y)) > 0 and not R._is_border((x, y, x + 1, y + 1), (w, h), zones)
     )
     assert changed_outside == 0
+
+
+def test_template_zone_rules():
+    size = (512, 512)
+    zones = R.text_zones([list(r) for r in DEFAULT_TEMPLATES["TSGH"]])
+    word = lambda t, c, box: R.Word(t, c, box, (0, 1, 1, 1))  # noqa: E731
+    # Real misreads just below the top band: tiny or low-confidence single "characters".
+    assert not R._is_residual(word("一", 83.0, (297, 102, 302, 103)), False, size, [], zones)
+    assert not R._is_residual(word("一", 71.0, (123, 353, 143, 368)), False, size, [], zones)
+    # Text-sized confident characters there are still caught, singly or as a pair.
+    assert R._is_residual(word("王", 88.0, (40, 104, 53, 118)), False, size, [], zones)
+    assert R._is_residual(word("王小明", 72.0, (40, 104, 80, 118)), False, size, [], zones)
+    pair = [word("王", 74.0, (40, 104, 53, 118)), word("小", 75.0, (56, 104, 69, 118))]
+    assert R._center_cjk_pairs(pair, [False, False], size, zones)

@@ -20,7 +20,9 @@ from PIL import Image, ImageDraw, ImageOps
 from .errors import RedactionFailed
 from .templates import Rect, apply_template
 
-REDACTION_VERSION = "9"
+REDACTION_VERSION = "12"
+MAX_WORD_H = 0.06  # an OCR "word" taller than this (fraction of image height) is not overlay text
+MAX_WORD_W = 0.60
 TEXT_ZONE_MARGIN = 0.03  # how far around a template rectangle stray overlay text may still sit
 MAX_MASK_PASSES = 6
 
@@ -46,6 +48,8 @@ _KEYNUM_RE = re.compile(r"^(SL|ST|TR|TE|TI|FA|FOV|THK|SP)[:=]?[+-]?\d{1,4}(?:\.\
 CENTRAL_CONF = 60
 # Verification floor inside the anatomy area: real overlay text scores 80+, texture misreads up to ~70.
 CENTRAL_VERIFY_CONF = 75
+TEMPLATE_ZONE_CONF = 70  # verification floor in the strip around a mask template
+MIN_TEXT_H = 0.015  # overlay characters are ~3% of the image height; specks below 1.5% are not text
 _STRIP = ":;,=[](){}<>|'\"`*"
 _CJK_RE = re.compile(r"[　-鿿가-힯＀-￯]")
 
@@ -86,6 +90,8 @@ def ocr_words(img: Image.Image, langs: str) -> list[Word]:
             x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
             box = (int(x / scale), int(y / scale), int((x + w) / scale) + 1, int((y + h) / scale) + 1)
             line = (variant, data["block_num"][i], data["par_num"][i], data["line_num"][i])
+            if (box[3] - box[1]) > MAX_WORD_H * img.height or (box[2] - box[0]) > MAX_WORD_W * img.width:
+                continue  # psm 6 sometimes lumps anatomy into one giant "word"; overlay text is ~3% tall
             words.append(Word(text, float(data["conf"][i]), box, line))
     return words
 
@@ -149,37 +155,56 @@ def _should_mask(word: Word, allowed: bool, size: tuple[int, int], zones: list[R
 def _is_residual(
     word: Word, allowed: bool, size: tuple[int, int], pii_terms: list[str], zones: list[Rect] | None = None
 ) -> bool:
+    """Would this OCR word, left visible, risk identifying the patient?
+
+    Without a template the outer quarter of the image is the text area and judged strictly. With a
+    template the known text is already black; the strip around it (zones) mostly yields misreads of the
+    black/anatomy boundary (single 0-5 px "characters", conf 50-70 on real images), so single CJK
+    characters there must be text-sized and confident, and pairs are judged by _cjk_pairs."""
     if allowed:
         return False
     text = word.text
     if any(t and t.lower() in text.lower() for t in pii_terms):
         return True
     a = _alnum(text)
+    templated = zones is not None
     border = _is_border(word.box, size, zones)
-    if re.search(r"\d{4,}", a) and word.conf >= (30 if border else CENTRAL_CONF):
+    if border:
+        floor = TEMPLATE_ZONE_CONF if templated else 50
+    else:
+        floor = CENTRAL_VERIFY_CONF
+    if re.search(r"\d{4,}", a) and word.conf >= (floor if templated or not border else 30):
         return True
-    floor = 50 if border else CENTRAL_VERIFY_CONF
     cjk = len(_CJK_RE.findall(text))
-    # At the edges any CJK counts. In the anatomy area a lone "CJK character" is texture noise (names are
-    # 2+ characters); single characters there are judged in pairs by _center_cjk_pairs instead.
-    if cjk and word.conf >= floor and (border or cjk >= 2):
+    if cjk >= 2 and word.conf >= floor:
         return True
+    if cjk == 1 and border:
+        if not templated and word.conf >= floor:
+            return True
+        if templated and word.conf >= 80 and (word.box[3] - word.box[1]) >= MIN_TEXT_H * size[1]:
+            return True
     return len(a) >= 3 and word.conf >= floor
 
 
 def _center_cjk_pairs(
     words: list[Word], flags: list[bool], size: tuple[int, int], zones: list[Rect] | None = None
 ) -> bool:
-    """Two single CJK characters side by side, both text-sized and confident, inside the anatomy area.
+    """Two single CJK characters side by side, both text-sized and confident.
 
     OCR sometimes splits a name into one word per character; specks of texture also read as single
-    characters, but they are tiny (2-11 px on a 512 px image) and rarely sit in a neat row."""
-    min_h = 0.015 * size[1]
-    singles = [
-        w for w, ok in zip(words, flags)
-        if not ok and not _is_border(w.box, size, zones) and len(_CJK_RE.findall(w.text)) == 1
-        and w.conf >= CENTRAL_VERIFY_CONF and (w.box[3] - w.box[1]) >= min_h
-    ]
+    characters, but they are tiny (2-11 px on a 512 px image) and rarely sit in a neat row. Checked in the
+    anatomy area, and with a template also in the strip around it."""
+    min_h = MIN_TEXT_H * size[1]
+    templated = zones is not None
+
+    def eligible(w: Word, ok: bool) -> bool:
+        if ok or len(_CJK_RE.findall(w.text)) != 1 or (w.box[3] - w.box[1]) < min_h:
+            return False
+        if _is_border(w.box, size, zones):
+            return templated and w.conf >= TEMPLATE_ZONE_CONF
+        return w.conf >= CENTRAL_VERIFY_CONF
+
+    singles = [w for w, ok in zip(words, flags) if eligible(w, ok)]
     for i, a in enumerate(singles):
         ah = a.box[3] - a.box[1]
         for b in singles[i + 1:]:
@@ -269,16 +294,19 @@ def redact(
     words = ocr_words(img, langs)
     overlay = read_overlay(words)  # plane / SL / ST are read before anything is blacked out
     if template:
-        # Known overlay layout: black out the text bands first, then let OCR handle whatever is left.
+        # Known overlay layout: black out the text bands, then OCR only *verifies* the rest. Nothing else is
+        # masked, so the anatomy stays exactly as in the original; if text is found the image is withheld
+        # (and the template needs adjusting) rather than covered with extra black boxes.
         apply_template(img, template)
-        words = ocr_words(img, langs)
-    # Some text (e.g. a name squeezed against the image edge next to other text) only becomes legible
-    # once its neighbours are masked, so keep OCR-ing and masking until a pass finds nothing new.
-    final = words
-    for _ in range(MAX_MASK_PASSES):
-        if _mask(img, final, _allowed_flags(final), skip_center=bool(template), zones=zones) == 0:
-            break  # image unchanged since `final` was read: it doubles as the verification pass
         final = ocr_words(img, langs)
+    else:
+        # No template: some text (e.g. a name squeezed against the image edge next to other text) only
+        # becomes legible once its neighbours are masked, so OCR and mask until a pass finds nothing new.
+        final = words
+        for _ in range(MAX_MASK_PASSES):
+            if _mask(img, final, _allowed_flags(final)) == 0:
+                break  # image unchanged since `final` was read: it doubles as the verification pass
+            final = ocr_words(img, langs)
     flags = _allowed_flags(final)
     if any(_is_residual(w, ok, img.size, terms, zones) for w, ok in zip(final, flags)):
         raise RedactionFailed()
