@@ -20,7 +20,7 @@ from PIL import Image, ImageDraw, ImageOps
 from .errors import RedactionFailed
 from .templates import Rect, apply_template
 
-REDACTION_VERSION = "6"
+REDACTION_VERSION = "7"
 MAX_MASK_PASSES = 6
 
 ORIENTATION = {"R", "L", "A", "P", "S", "I"}
@@ -142,11 +142,35 @@ def _is_residual(word: Word, allowed: bool, size: tuple[int, int], pii_terms: li
         return True
     floor = 50 if border else CENTRAL_VERIFY_CONF
     cjk = len(_CJK_RE.findall(text))
-    # In the anatomy area a lone "CJK character" is texture noise (names are 2+ characters, and overlay
-    # text lives in the margins); at the edges any CJK counts.
-    if cjk and word.conf >= floor and (border or cjk >= 2 or word.conf >= 80):
+    # At the edges any CJK counts. In the anatomy area a lone "CJK character" is texture noise (names are
+    # 2+ characters); single characters there are judged in pairs by _center_cjk_pairs instead.
+    if cjk and word.conf >= floor and (border or cjk >= 2):
         return True
     return len(a) >= 3 and word.conf >= floor
+
+
+def _center_cjk_pairs(words: list[Word], flags: list[bool], size: tuple[int, int]) -> bool:
+    """Two single CJK characters side by side, both text-sized and confident, inside the anatomy area.
+
+    OCR sometimes splits a name into one word per character; specks of texture also read as single
+    characters, but they are tiny (2-11 px on a 512 px image) and rarely sit in a neat row."""
+    min_h = 0.015 * size[1]
+    singles = [
+        w for w, ok in zip(words, flags)
+        if not ok and not _is_border(w.box, size) and len(_CJK_RE.findall(w.text)) == 1
+        and w.conf >= CENTRAL_VERIFY_CONF and (w.box[3] - w.box[1]) >= min_h
+    ]
+    for i, a in enumerate(singles):
+        ah = a.box[3] - a.box[1]
+        for b in singles[i + 1:]:
+            bh = b.box[3] - b.box[1]
+            if max(ah, bh) > 1.6 * min(ah, bh):
+                continue
+            same_row = abs((a.box[1] + a.box[3]) - (b.box[1] + b.box[3])) / 2 < 0.5 * max(ah, bh)
+            gap = max(a.box[0], b.box[0]) - min(a.box[2], b.box[2])
+            if same_row and gap < 1.5 * max(ah, bh):
+                return True
+    return False
 
 
 def _mask(img: Image.Image, words: list[Word], flags: list[bool], skip_center: bool = False) -> int:
@@ -231,6 +255,8 @@ def redact(
         final = ocr_words(img, langs)
     flags = _allowed_flags(final)
     if any(_is_residual(w, ok, img.size, terms) for w, ok in zip(final, flags)):
+        raise RedactionFailed()
+    if _center_cjk_pairs(final, flags, img.size):
         raise RedactionFailed()
     if terms:
         flat = re.sub(r"\s+", "", " ".join(w.text for w in final)).lower()

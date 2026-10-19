@@ -97,8 +97,17 @@ def test_template_redaction_removes_pii_and_reads_params_first():
 
 
 def test_center_noise_single_cjk_is_not_a_leak():
-    w = R.Word("骨", 60.0, (287, 358, 320, 382), (0, 1, 1, 1))
-    assert not R._is_residual(w, False, (512, 512), [])
-    assert R._is_residual(R.Word("王小", 70.0, (287, 358, 330, 382), (0, 1, 1, 1)), False, (512, 512), []) is False
-    assert R._is_residual(R.Word("王小明", 85.0, (287, 358, 340, 382), (0, 1, 1, 1)), False, (512, 512), [])
-    assert R._is_residual(R.Word("王", 60.0, (2, 2, 16, 17), (0, 1, 1, 1)), False, (512, 512), [])  # edge: strict
+    size = (512, 512)
+    word = lambda t, c, box: R.Word(t, c, box, (0, 1, 1, 1))  # noqa: E731
+    # Real-image cases that used to withhold: lone or tiny "characters" in the anatomy area.
+    assert not R._is_residual(word("骨", 96.0, (225, 311, 230, 313)), False, size, [])
+    specks = [word("骨", 93.0, (202, 310, 215, 314)), word("肉", 96.0, (225, 311, 230, 313))]
+    assert not R._center_cjk_pairs(specks, [False, False], size)
+    mixed = [word("骨", 83.0, (181, 145, 186, 147)), word("肉", 80.0, (189, 141, 197, 152))]
+    assert not R._center_cjk_pairs(mixed, [False, False], size)
+    # A name split into text-sized single characters in a row is still caught.
+    name = [word("王", 88.0, (200, 300, 213, 314)), word("小", 90.0, (216, 300, 229, 314)), word("明", 85.0, (232, 300, 245, 314))]
+    assert R._center_cjk_pairs(name, [False] * 3, size)
+    assert R._is_residual(word("王小明", 80.0, (200, 300, 245, 314)), False, size, [])
+    assert not R._is_residual(word("王小", 70.0, (200, 300, 230, 314)), False, size, [])  # below 75 in the center
+    assert R._is_residual(word("王", 60.0, (2, 2, 16, 17)), False, size, [])  # edges stay strict
