@@ -25,12 +25,15 @@ class DriveFile:
     name: str
     folders: tuple[str, ...]  # folder names from the root folder down (root itself excluded)
     modified_time: str
+    mime: str = ""
 
 
 class DriveSource(Protocol):
     def list_files(self) -> list[DriveFile]: ...
 
     def download(self, file: DriveFile) -> bytes: ...
+
+    # Optional: `download_head(file, n) -> bytes` returns the first n bytes (used to read DICOM headers).
 
 
 class GoogleDriveSource:
@@ -90,10 +93,17 @@ class GoogleDriveSource:
                     if item["id"] not in seen and len(path) < 8:
                         seen.add(item["id"])
                         stack.append((item["id"], path + (item["name"],)))
-                elif item["mimeType"].startswith("image/"):
-                    files.append(DriveFile(item["id"], item["name"], path, item["modifiedTime"]))
+                elif _wanted(item["name"], item["mimeType"]):
+                    files.append(DriveFile(item["id"], item["name"], path, item["modifiedTime"], item["mimeType"]))
         self._allowed = {f.id for f in files}
         return files
+
+    def download_head(self, file: DriveFile, n: int) -> bytes:
+        if file.id not in self._allowed:
+            raise KneeError("file is not inside the configured root folder")
+        request = self._svc().files().get_media(fileId=file.id)
+        request.headers["Range"] = f"bytes=0-{n - 1}"
+        return request.execute()
 
     def download(self, file: DriveFile) -> bytes:
         from googleapiclient.http import MediaIoBaseDownload
@@ -129,6 +139,9 @@ class LazyGoogleDrive:
 
     def download(self, file: DriveFile) -> bytes:
         return self._get().download(file)
+
+    def download_head(self, file: DriveFile, n: int) -> bytes:
+        return self._get().download_head(file, n)
 
 
 def load_google_credentials(client_secrets: Path | None, token_file: Path | None):
@@ -188,6 +201,16 @@ class FileCache:
         return data
 
 
+def _wanted(name: str, mime: str) -> bool:
+    """Images (JPEG/PNG) and DICOM candidates: *.dcm, application/dicom, or extensionless binaries."""
+    low = name.lower()
+    if low == "dicomdir":
+        return False
+    if mime.startswith("image/") or low.endswith((".jpg", ".jpeg", ".png", ".dcm", ".dicom")):
+        return True
+    return mime == "application/dicom" or ("." not in name and mime in ("", "application/octet-stream"))
+
+
 def _safe(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "-", text)
 
@@ -201,14 +224,21 @@ class LocalFolderSource:
     def list_files(self) -> list[DriveFile]:
         out = []
         for p in sorted(self.root.rglob("*")):
-            if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".png"):
+            if p.is_file() and _wanted(p.name, ""):
                 rel = p.relative_to(self.root)
                 mtime = f"{p.stat().st_mtime_ns}"
                 out.append(DriveFile(rel.as_posix(), p.name, tuple(rel.parts[:-1]), mtime))
         return out
 
+    def download_head(self, file: DriveFile, n: int) -> bytes:
+        with open(self._path(file), "rb") as fh:
+            return fh.read(n)
+
     def download(self, file: DriveFile) -> bytes:
+        return self._path(file).read_bytes()
+
+    def _path(self, file: DriveFile) -> Path:
         path = (self.root / file.id).resolve()
         if self.root not in path.parents:
             raise KneeError("file is not inside the configured root folder")
-        return path.read_bytes()
+        return path

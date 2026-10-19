@@ -183,11 +183,16 @@ def read_overlay(words: list[Word]) -> Overlay:
     return Overlay(plane, sl, st)
 
 
-def redact(raw: bytes, langs: str = "eng", pii_terms: list[str] | None = None) -> tuple[Image.Image, Overlay]:
+def redact(
+    raw: bytes | Image.Image, langs: str = "eng", pii_terms: list[str] | None = None
+) -> tuple[Image.Image, Overlay]:
     """Return (masked image, overlay info). Raises RedactionFailed if identifying text survives."""
     terms = pii_terms or []
-    src = Image.open(io.BytesIO(raw))
-    src.load()
+    if isinstance(raw, Image.Image):
+        src = raw
+    else:
+        src = Image.open(io.BytesIO(raw))
+        src.load()
     img = src.convert("L") if src.mode not in ("L", "RGB") else src.copy()
 
     words = ocr_words(img, langs)

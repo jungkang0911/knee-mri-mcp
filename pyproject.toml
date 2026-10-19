@@ -11,6 +11,11 @@ dependencies = [
   "google-auth>=2.20",
   "google-auth-oauthlib>=1.0",
   "uvicorn>=0.30",
+  "pydicom>=3.0",
+  "numpy>=1.26",
+  "pylibjpeg>=2.0",
+  "pylibjpeg-libjpeg>=2.1",
+  "pylibjpeg-openjpeg>=2.3",
 ]
 
 [project.optional-dependencies]

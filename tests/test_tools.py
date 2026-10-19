@@ -190,7 +190,7 @@ async def test_list_studies_and_issues(server):
     assert "2023-04-11 | 2023-04-11 | - | unknown | 1 | 3" in text
     assert "2024-12-03_VGHTPE | 2024-12-03 | VGHTPE | MRI | 2 | 6" in text
     assert "2025-11-26" not in text  # anonymized 2019 copy is excluded, not a new study
-    assert "excluded 2 images" in text
+    assert "excluded 2 files" in text
 
 
 def test_real_drive_name_variants():

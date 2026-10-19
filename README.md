@@ -42,6 +42,18 @@
 - 檢查類型（MRI／X-ray）優先順序：`KNEE_STUDY_TYPES` → 檔名裡的 `XR`/`MRI` → 資料夾名稱 → `unknown`。
 - 新增的檢查（例如 2026-12 的 MRI）照同樣規則放進根資料夾，最多 5 分鐘（`KNEE_LISTING_TTL`）就會出現；呼叫 `list_studies` 會立即重新整理。
 
+## DICOM（醫院光碟，免改檔名）
+
+醫院給的光碟通常是 DICOM。把整張光碟的資料夾原封不動上傳到根資料夾底下即可，**不必改檔名**：
+
+- 會讀取的檔案：`.dcm`／`.dicom`、Drive 類型為 `application/dicom`，或沒有副檔名的檔案（光碟上常見的 `IM000001`）。`DICOMDIR` 會略過。
+- 檢查日期、序列號、張號取自 DICOM 標籤 `StudyDate`、`SeriesNumber`、`InstanceNumber`；切面取 `SeriesDescription` 與 `ImageOrientationPatient`；SL／ST 取 `SliceLocation`／`SliceThickness`，比 OCR 準。
+- 醫院代碼取資料夾名稱裡 3–8 個大寫英文字（例如資料夾取名 `2019-03-20_TSGH_光碟`）；沒有就只用日期當 study_id。
+- 建立索引時只用 HTTP Range 讀每個檔案的前 256 KB 標頭，標頭資訊快取在 `<cache>/dicom-meta/`（只有上面列的非個資欄位）。
+- **病患姓名、病歷號、生日、醫師、醫院名稱等標籤一律不讀出**，不會出現在任何回應、issues 或日誌；像素轉成 PNG 後同樣走 OCR 遮蔽與驗證，因為有些 DICOM 影像本身也燒有文字。
+- 支援未壓縮、JPEG、JPEG-LS、JPEG 2000 壓縮（pylibjpeg）；MONOCHROME1 會自動反相；多影格 DICOM 只顯示第一格並列在 issues。無法解碼的檔案回報 `cannot decode this DICOM image`。
+- 同一張影像若同時有 DICOM 與 JPEG，保留 DICOM。
+
 ## 個資遮蔽（怎麼做、保證到什麼程度）
 
 採**白名單**、失敗即拒絕（fail closed）：
@@ -108,7 +120,7 @@ python -m venv .venv
 | `KNEE_ALLOWED_HOSTS` | | 額外允許的 Host header（DNS rebinding 防護）；`KNEE_PUBLIC_URL` 的主機會自動加入 |
 | `KNEE_BEARER_TOKENS` | 二擇一 ✔ | 逗號分隔的靜態 token，給 Claude Code / MCP Inspector；產生：`python -m knee_mcp --gen-token` |
 | `KNEE_OWNER_PASSWORD` | 二擇一 ✔ | 啟用內建 OAuth 登入頁（claude.ai 連接器需要）；請用長密碼 |
-| `KNEE_ALLOWED_REDIRECTS` | | OAuth 允許的 redirect URI 前綴；預設 claude.ai / claude.com callback 與 localhost |
+| `KNEE_ALLOWED_REDIRECTS` | | OAuth 允許的 redirect URI 前綴；預設 claude.ai / claude.com / ChatGPT callback 與 localhost |
 | `TESSERACT_CMD` | | tesseract.exe 路徑（不在 PATH 時） |
 | `KNEE_OCR_LANGS` | | 預設 `eng`；建議 `eng+chi_tra` 以便偵測中文姓名 |
 | `KNEE_PII_TERMS` | 建議 | 遮完後絕不能出現的字串（逗號分隔） |
@@ -353,7 +365,7 @@ git ls-files -co --exclude-standard | tar -czf - -T - | ssh ubuntu@165.154.243.8
 ssh ubuntu@165.154.243.84 "journalctl -u knee-mcp -n 50 --no-pager"
 ```
 
-## 加入 Claude
+## 加入 Claude / ChatGPT
 
 ### claude.ai 連接器（自訂連接器）
 
@@ -372,6 +384,16 @@ claude.ai 的自訂連接器支援 **OAuth（含 Dynamic Client Registration）*
 4. 對話中開啟此連接器即可使用。要撤銷：刪除 `<cache>/auth.json` 中的 token 或整個檔案後重新啟動。
 
 參考：[Building custom connectors via remote MCP servers](https://support.claude.com/en/articles/11503834)、[Connector authentication](https://claude.com/docs/connectors/building/authentication)。
+
+### ChatGPT（開發人員模式連接器）
+
+ChatGPT 的自訂 MCP 連接器同樣走 OAuth（Dynamic Client Registration + PKCE），用的是同一個登入頁與擁有者密碼。允許的 callback 預設已包含 `https://chatgpt.com/connector/oauth/…` 與舊版 `https://chatgpt.com/connector_platform_oauth_redirect`。
+
+1. ChatGPT → 設定 → 應用程式與連接器 → 進階設定 → 開啟「開發人員模式」。
+2. 建立連接器：MCP 伺服器 URL 填 `https://knee.loanhusband.com/mcp`，驗證方式選 **OAuth**，其餘留空（使用動態註冊）。
+3. 連線時會開到本伺服器的密碼頁，輸入擁有者密碼即可。
+
+注意：ChatGPT 是否會把工具回傳的圖片（ImageContent）顯示給模型看，**尚未實測**。參考：[OpenAI Apps SDK — Authentication](https://developers.openai.com/apps-sdk/build/auth)。
 
 ### Claude Code
 
@@ -405,7 +427,7 @@ npx @modelcontextprotocol/inspector --cli https://knee.loanhusband.com/mcp --tra
 | 4 | S4 與 S04 視為同一序列 | ✅ 自動測試 |
 | 5 | README | ✅ 本文件 |
 
-其他自動測試涵蓋：未帶 token 回 401、DCR 拒絕非允許的 redirect、錯誤密碼 401、授權碼不可重用、Drive 快取以 fileId + modifiedTime 為 key、錯誤訊息不含路徑或個資、遮蔽失敗時不回傳圖片、`get_slices` 上限 8 張、crop／zoom、compare。
+其他自動測試涵蓋：DICOM（依標籤建索引、只讀標頭、標籤個資不外流、燒入文字遮蔽、MONOCHROME1、依 InstanceNumber 排序）、ChatGPT callback 可註冊、未帶 token 回 401、DCR 拒絕非允許的 redirect、錯誤密碼 401、授權碼不可重用、Drive 快取以 fileId + modifiedTime 為 key、錯誤訊息不含路徑或個資、遮蔽失敗時不回傳圖片、`get_slices` 上限 8 張、crop／zoom、compare。
 
 ## 安全備註
 

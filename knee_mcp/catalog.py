@@ -5,11 +5,13 @@ from __future__ import annotations
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .drive import DriveFile, DriveSource
 from .errors import KneeError, NotFound
-from .naming import is_image_name, normalize_series, parse_name
+from .dicom import DicomMeta, is_dicom_candidate
+from .naming import ParsedName, folder_hospital, is_image_name, normalize_series, parse_name
 
 _MRI_RE = re.compile(r"(?<![A-Za-z])(MRI|MR)(?![A-Za-z])", re.IGNORECASE)
 _XR_RE = re.compile(r"(?<![A-Za-z])(X-?RAY|XR|CR|DX)(?![A-Za-z])|X光", re.IGNORECASE)
@@ -81,21 +83,37 @@ def _safe_label(name: str, pii_terms: list[str]) -> str:
 
 
 def build_index(
-    files: list[DriveFile], study_types: dict[str, str], pii_terms: list[str], exclude: list[str] | None = None
+    files: list[DriveFile],
+    study_types: dict[str, str],
+    pii_terms: list[str],
+    exclude: list[str] | None = None,
+    dicom_meta: dict[str, DicomMeta | None] | None = None,
 ) -> Index:
     issues: list[str] = []
     studies: dict[tuple[str, str], Study] = {}
     folder_text: dict[tuple[str, str], list[str]] = {}
     modality: dict[tuple[str, str], str] = {}
     excluded = 0
-    for f in sorted(files, key=lambda x: (x.folders, x.name)):
-        if not is_image_name(f.name):
+    # DICOM first, so when the same image exists as DICOM and JPEG the DICOM copy is the one kept.
+    for f in sorted(files, key=lambda x: (not is_dicom_candidate(x), x.folders, x.name)):
+        dicom = is_dicom_candidate(f)
+        if not dicom and not is_image_name(f.name):
             continue
         if exclude and any(term in folder for folder in f.folders for term in exclude):
             excluded += 1
             continue
-        p = parse_name(f.name, list(f.folders))
         label = _safe_label(f.name, pii_terms)
+        if dicom:
+            meta = (dicom_meta or {}).get(f.id)
+            if meta is None:
+                issues.append(f"skipped {label}: not a readable DICOM file (or missing date/series/instance)")
+                continue
+            if meta.frames > 1:
+                issues.append(f"{label}: multi-frame DICOM ({meta.frames} frames); only the first frame is shown")
+            p = ParsedName(meta.study_date, folder_hospital(f.folders), meta.series, meta.instance, True,
+                           modality=meta.modality)
+        else:
+            p = parse_name(f.name, list(f.folders))
         if p is None:
             issues.append(f"skipped {label}: cannot determine date/series/image number")
             continue
@@ -124,7 +142,7 @@ def build_index(
             or ("MRI" if _MRI_RE.search(text) else "X-ray" if _XR_RE.search(text) else "unknown")
         )
     if excluded:
-        issues.append(f"excluded {excluded} images in folders matching KNEE_EXCLUDE_FOLDERS")
+        issues.append(f"excluded {excluded} files in folders matching KNEE_EXCLUDE_FOLDERS")
     ordered = sorted(studies.values(), key=lambda s: (s.date, s.hospital))
     return Index(ordered, issues)
 
@@ -139,8 +157,10 @@ class Catalog:
         pii_terms: list[str],
         ttl: float,
         exclude: list[str] | None = None,
+        dicom_loader: Callable[[list[DriveFile]], dict[str, DicomMeta | None]] | None = None,
     ) -> None:
         self.source = source
+        self.dicom_loader = dicom_loader
         self.exclude = exclude or []
         self.study_types = study_types
         self.pii_terms = pii_terms
@@ -152,6 +172,10 @@ class Catalog:
     def index(self, refresh: bool = False) -> Index:
         with self._lock:
             if refresh or self._index is None or time.monotonic() - self._at > self.ttl:
-                self._index = build_index(self.source.list_files(), self.study_types, self.pii_terms, self.exclude)
+                files = self.source.list_files()
+                metas = None
+                if self.dicom_loader:
+                    metas = self.dicom_loader([f for f in files if is_dicom_candidate(f)])
+                self._index = build_index(files, self.study_types, self.pii_terms, self.exclude, metas)
                 self._at = time.monotonic()
             return self._index

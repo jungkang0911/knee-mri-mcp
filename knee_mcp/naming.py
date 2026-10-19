@@ -65,6 +65,18 @@ def _folder_series(folders: list[str]) -> int | None:
     return None
 
 
+_NOT_HOSPITAL = {"MRI", "RK", "LK", "XR", "CT", "MR", "DICOM", "JPG", "IMG", "SER", "SERIES", "STUDY"}
+
+
+def folder_hospital(folders: list[str] | tuple[str, ...]) -> str:
+    """Hospital code from folder names (innermost wins), e.g. '2019-03-20_TSGH_MRI' -> 'TSGH'; '' if none."""
+    for folder in reversed(folders):
+        for hm in _HOSP_RE.finditer(folder):
+            if hm.group(1) not in _NOT_HOSPITAL:
+                return hm.group(1)
+    return ""
+
+
 def _find_date(text: str) -> str | None:
     for rx in _DATE_RES:
         m = rx.search(text)

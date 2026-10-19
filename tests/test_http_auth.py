@@ -17,6 +17,7 @@ import uvicorn
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
+from knee_mcp.config import Config
 from knee_mcp.server import make_app
 
 TOKEN = "test-bearer-" + "x" * 24
@@ -35,7 +36,7 @@ def live(cfg, service):
     cfg.port = _free_port()
     cfg.bearer_tokens = [TOKEN]
     cfg.owner_password = PASSWORD
-    cfg.allowed_redirect_prefixes = [REDIRECT]
+    cfg.allowed_redirect_prefixes = Config.from_env().allowed_redirect_prefixes  # production defaults
     app = make_app(cfg, service)
     srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=cfg.port, log_level="warning"))
     t = threading.Thread(target=srv.run, daemon=True)
@@ -116,3 +117,11 @@ async def test_oauth_flow_like_claude_ai(live):
 
     r = await _call_get_slice(live, tok["access_token"])
     assert not r.is_error and r.content[0].type == "image"
+
+
+async def test_chatgpt_can_register(live):
+    async with httpx2.AsyncClient(base_url=live) as h:
+        for uri in ("https://chatgpt.com/connector/oauth/abc123", "https://chatgpt.com/connector_platform_oauth_redirect"):
+            r = await h.post("/register", json={"redirect_uris": [uri], "client_name": "ChatGPT",
+                                                "token_endpoint_auth_method": "none"})
+            assert r.status_code == 201, (uri, r.text)
