@@ -103,7 +103,7 @@ def _caption(study: Study, series: Series, sl: Slice, ov: Overlay) -> str:
 class KneeService:
     def __init__(self, cfg: Config, source: DriveSource) -> None:
         self.cfg = cfg
-        self.catalog = Catalog(source, cfg.study_types, cfg.pii_terms, cfg.listing_ttl)
+        self.catalog = Catalog(source, cfg.study_types, cfg.pii_terms, cfg.listing_ttl, cfg.exclude_folders)
         self.proc = Processor(cfg, source, FileCache(cfg.cache_dir, keep=cfg.keep_raw))
         self.pool = ThreadPoolExecutor(max_workers=max(1, cfg.workers))
 
@@ -121,7 +121,7 @@ class KneeService:
             lines = ["study_id | date | hospital | type | series | images"]
             for s in idx.studies:
                 n = sum(len(x.slices) for x in s.series.values())
-                lines.append(f"{s.id} | {s.date} | {s.hospital} | {s.kind} | {len(s.series)} | {n}")
+                lines.append(f"{s.id} | {s.date} | {s.hospital or '-'} | {s.kind} | {len(s.series)} | {n}")
         if idx.issues:
             lines.append("")
             lines.append(f"issues ({len(idx.issues)}):")
@@ -201,7 +201,8 @@ class KneeService:
             sl = se.get(int(ref["index"]))
             img, ov = self.proc.redacted(sl.file)
             imgs.append(imaging.apply_crop(img, ref.get("crop")))
-            labels.append(f"{st.date} {st.hospital} S{se.number} I{sl.index:04d}" + (f" {ov.plane}" if ov.plane else ""))
+            label = " ".join(x for x in (st.date, st.hospital, f"S{se.number}", f"I{sl.index:04d}", ov.plane) if x)
+            labels.append(label)
         out = imaging.side_by_side(imgs[0], labels[0], imgs[1], labels[1])
         return Rendered(imaging.to_png(out, self.cfg.max_png_bytes), f"left: {labels[0]} | right: {labels[1]}")
 

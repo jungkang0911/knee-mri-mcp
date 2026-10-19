@@ -5,10 +5,18 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+# {date}[_{HOSP}]_{RK|LK}[_{XR|MR|MRI|CT...}][_S{series}]_{I{index} | IMG_{index}}.jpg
+#   2019-03-20_TSGH_RK_S7_I0013.jpg   2018-12-31_RK_XR_S01_I0001.jpg   2023-04-11_RK_IMG_0001.jpg
 STRICT_RE = re.compile(
-    r"^(?P<date>\d{4}-\d{2}-\d{2})_(?P<hosp>[A-Za-z][A-Za-z0-9]*)_RK_S(?P<series>\d+)_I(?P<index>\d{4})\.jpe?g$",
+    r"^(?P<date>\d{4}-\d{2}-\d{2})"
+    r"(?:_(?P<hosp>[A-Za-z][A-Za-z0-9]*))?"
+    r"_(?P<side>RK|LK)"
+    r"(?:_(?P<mod>XR|DX|CR|MR|MRI|CT))?"
+    r"(?:_S(?P<series>\d+))?"
+    r"_(?:I|IMG_)(?P<index>\d{1,5})\.jpe?g$",
     re.IGNORECASE,
 )
+_MODALITY = {"XR": "X-ray", "DX": "X-ray", "CR": "X-ray", "MR": "MRI", "MRI": "MRI", "CT": "CT"}
 
 _DATE_RES = [
     re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)"),
@@ -17,6 +25,7 @@ _DATE_RES = [
 ]
 _SERIES_RES = [
     re.compile(r"(?:^|[^A-Za-z])S(?:E|ERIES)?[ _-]?0*(\d{1,3})(?![0-9])", re.IGNORECASE),
+    re.compile(r"序列[ _-]?0*(\d{1,3})(?![0-9])"),
 ]
 _HOSP_RE = re.compile(r"(?:^|[_\s-])([A-Z]{3,8})(?=$|[_\s-])")
 _IMAGE_EXT_RE = re.compile(r"\.(jpe?g|png)$", re.IGNORECASE)
@@ -30,6 +39,7 @@ class ParsedName:
     index: int
     strict: bool
     note: str = ""
+    modality: str = ""  # "X-ray" / "MRI" / "CT" when the name says so
 
 
 def normalize_series(value: str | int) -> int:
@@ -44,6 +54,15 @@ def normalize_series(value: str | int) -> int:
 
 def is_image_name(name: str) -> bool:
     return bool(_IMAGE_EXT_RE.search(name))
+
+
+def _folder_series(folders: list[str]) -> int | None:
+    for folder in reversed(folders):
+        for rx in _SERIES_RES:
+            sm = rx.search(folder)
+            if sm:
+                return int(sm.group(1))
+    return None
 
 
 def _find_date(text: str) -> str | None:
@@ -63,12 +82,14 @@ def parse_name(name: str, folders: list[str]) -> ParsedName | None:
     """
     m = STRICT_RE.match(name)
     if m:
+        series = int(m["series"]) if m["series"] else _folder_series(folders)
         return ParsedName(
             date=m["date"],
-            hospital=m["hosp"].upper(),
-            series=int(m["series"]),
+            hospital=(m["hosp"] or "").upper(),
+            series=1 if series is None else series,
             index=int(m["index"]),
             strict=True,
+            modality=_MODALITY.get((m["mod"] or "").upper(), ""),
         )
 
     # Fallback: date / hospital / series from the folders (innermost wins), index from the file name.

@@ -88,6 +88,7 @@ async def test_compare_side_by_side(server):
     assert img.width > img.height
     assert "2019-03-20 TSGH S7 I0010" in r.content[1].text
     assert "2024-12-03 VGHTPE S4 I0002" in r.content[1].text
+    assert "  " not in r.content[1].text
 
 
 # ---- acceptance 3: no PII survives -------------------------------------------------------------
@@ -184,10 +185,37 @@ async def test_list_studies_and_issues(server):
     async with Client(server) as c:
         r = await c.call_tool("list_studies", {})
     text = r.content[0].text
-    assert "2018-12-31_TSGH | 2018-12-31 | TSGH | X-ray | 1 | 2" in text
+    assert "2018-12-31 | 2018-12-31 | - | X-ray | 1 | 2" in text
     assert "2019-03-20_TSGH | 2019-03-20 | TSGH | MRI | 1 | 20" in text
+    assert "2023-04-11 | 2023-04-11 | - | unknown | 1 | 3" in text
     assert "2024-12-03_VGHTPE | 2024-12-03 | VGHTPE | MRI | 2 | 6" in text
-    assert "img-00001-00001.jpg: name does not follow the naming rule" in text
+    assert "2025-11-26" not in text  # anonymized 2019 copy is excluded, not a new study
+    assert "excluded 2 images" in text
+
+
+def test_real_drive_name_variants():
+    cases = {
+        ("2019-03-20_TSGH_RK_S4_I0008.jpg", ("2019-03-20_TSGH", "序列-004")): ("2019-03-20", "TSGH", 4, 8, ""),
+        ("2024-12-03_VGHTPE_RK_S3_I0012.jpg", ()): ("2024-12-03", "VGHTPE", 3, 12, ""),
+        ("2018-12-31_RK_XR_S01_I0001.jpg", ("2018", "序列-001")): ("2018-12-31", "", 1, 1, "X-ray"),
+        ("2023-04-11_RK_IMG_0000.jpg", ("2023",)): ("2023-04-11", "", 1, 0, ""),
+    }
+    for (name, folders), want in cases.items():
+        p = parse_name(name, list(folders))
+        assert (p.date, p.hospital, p.series, p.index, p.modality) == want and p.strict, name
+
+
+def test_nonconforming_name_inferred_from_folders_and_listed():
+    from knee_mcp.catalog import build_index
+    from knee_mcp.drive import DriveFile
+
+    f = DriveFile("x1", "img-00005-00013.jpg", ("2019-03-20_TSGH_MRI", "序列-005"), "t")
+    idx = build_index([f], {}, [])
+    assert idx.studies[0].id == "2019-03-20_TSGH" and 5 in idx.studies[0].series
+    assert "img-00005-00013.jpg: name does not follow the naming rule" in idx.issues[0]
+
+    hidden = DriveFile("x2", "img-00005-00014.jpg", ("日期待確認_匿名化MRI（原標記20251126）",), "t")
+    assert build_index([hidden], {}, [], ["匿名化"]).studies == []
 
 
 async def test_list_series_reads_overlay(server):

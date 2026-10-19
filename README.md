@@ -24,19 +24,23 @@
 
 ## 檔名規則
 
-`{YYYY-MM-DD}_{醫院代碼}_RK_S{序列號}_I{張號4碼}.jpg`，例如 `2019-03-20_TSGH_RK_S7_I0013.jpg`。
-
-不符合規則的檔名（例如 `img-00001-00001.jpg`）會用資料夾名稱推斷：日期取自資料夾名稱中的 `YYYY-MM-DD` 或 `YYYYMMDD`，醫院代碼取 3–8 個大寫英文字，序列號取 `S5`、`SE5`、`Series 5`，張號取檔名最後一組數字。推斷過的檔案會列在 `list_studies` 的 issues。檢查類型（MRI／X-ray）依資料夾名稱中的 `MRI`/`MR`/`XR`/`X-ray`/`X光` 判斷，也可以用 `KNEE_STUDY_TYPES` 直接指定。
-
-建議的 Drive 結構（不強制）：
-
 ```
-<KNEE_ROOT_FOLDER_ID>/
-  2018-12-31_TSGH_XR/...
-  2019-03-20_TSGH_MRI/2019-03-20_TSGH_RK_S7_I0001.jpg ...
-  2024-12-03_VGHTPE_MRI/...
-  2026-12-xx_..._MRI/        ← 新增後最多 5 分鐘（KNEE_LISTING_TTL）就會出現；呼叫 list_studies 會立即重新整理
+{YYYY-MM-DD}[_{醫院代碼}]_{RK|LK}[_{XR|MR|MRI|CT}][_S{序列號}]_{I{張號} | IMG_{張號}}.jpg
 ```
+
+| 例子 | 解讀 |
+|---|---|
+| `2019-03-20_TSGH_RK_S4_I0008.jpg` | 2019-03-20、TSGH、序列 4、第 8 張 |
+| `2024-12-03_VGHTPE_RK_S3_I0012.jpg` | 2024-12-03、VGHTPE、序列 3、第 12 張 |
+| `2018-12-31_RK_XR_S01_I0001.jpg` | 沒有醫院代碼；`XR` 讓類型自動判為 X-ray；序列 1 |
+| `2023-04-11_RK_IMG_0000.jpg` | 沒有醫院、沒有序列：序列取資料夾名稱（如 `序列-001`），沒有就當序列 1；張號可為 0000 |
+
+- 醫院代碼可省略；省略時 study_id 只有日期（例如 `2018-12-31`）。
+- **S4 和 S04 視為同一序列**，`S01` 就是序列 1。
+- 不符合規則的檔名（例如 `img-00004-00008.jpg`）會用資料夾名稱推斷：日期取資料夾名稱裡的 `YYYY-MM-DD` 或 `YYYYMMDD`；醫院代碼取 3–8 個大寫英文字；序列取 `S5`、`SE5`、`Series 5` 或 `序列-005`；張號取檔名最後一組數字。推斷過的檔案會列在 `list_studies` 的 issues。
+- **重複的副本資料夾請排除。** 例如 `日期待確認_匿名化MRI（原標記20251126）` 是 2019 MRI 的匿名副本，名稱裡的 20251126 會被誤認成一次 2025 年的檢查。設定 `KNEE_EXCLUDE_FOLDERS=匿名化` 後，名稱含這個字的資料夾整個略過，並在 issues 註明略過幾張。
+- 檢查類型（MRI／X-ray）優先順序：`KNEE_STUDY_TYPES` → 檔名裡的 `XR`/`MRI` → 資料夾名稱 → `unknown`。
+- 新增的檢查（例如 2026-12 的 MRI）照同樣規則放進根資料夾，最多 5 分鐘（`KNEE_LISTING_TTL`）就會出現；呼叫 `list_studies` 會立即重新整理。
 
 ## 個資遮蔽（怎麼做、保證到什麼程度）
 
@@ -109,6 +113,7 @@ python -m venv .venv
 | `KNEE_OCR_LANGS` | | 預設 `eng`；建議 `eng+chi_tra` 以便偵測中文姓名 |
 | `KNEE_PII_TERMS` | 建議 | 遮完後絕不能出現的字串（逗號分隔） |
 | `KNEE_STUDY_TYPES` | | 例 `2018-12-31=X-ray,2019-03-20=MRI` |
+| `KNEE_EXCLUDE_FOLDERS` | | 逗號分隔；資料夾名稱含其中任一字串就略過（例 `匿名化`） |
 | `KNEE_LISTING_TTL` | | Drive 清單快取秒數，預設 300 |
 | `KNEE_WORKERS` | | 平行處理數，預設 4 |
 | `KNEE_LOCAL_DIR` | 開發用 | 設定後改讀本機資料夾（同 Drive 結構），不連 Drive |

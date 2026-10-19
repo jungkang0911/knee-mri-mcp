@@ -44,9 +44,14 @@ class MockDrive:
             add(f"2024-12-03_VGHTPE_RK_S04_I{i:04d}.jpg", ("2024-12-03_VGHTPE_MRI",),
                 knee_image(100 + i, plane="SAG PD", pii=False))
         add("2024-12-03_VGHTPE_RK_S5_I0099.jpg", ("2024-12-03_VGHTPE_MRI",), knee_image(199, plane="AX T2 FS", pii=False))
-        # 2018 X-ray with names that break the rule -> folder inference + issues.
+        # Real-world variants: X-ray without hospital code, an IMG_ set without series, and an anonymized
+        # copy of 2019 kept under its original names (excluded via KNEE_EXCLUDE_FOLDERS).
         for i in range(1, 3):
-            add(f"img-00001-{i:05d}.jpg", ("2018-12-31_TSGH_XR", "S1"), knee_image(200 + i, plane="", pii=False))
+            add(f"2018-12-31_RK_XR_S01_I{i:04d}.jpg", ("2018-12-31_X光", "序列-001"), knee_image(200 + i, plane="", pii=False))
+        for i in range(0, 3):
+            add(f"2023-04-11_RK_IMG_{i:04d}.jpg", ("2023-04-11",), knee_image(300 + i, plane="", pii=False))
+        for i in range(1, 3):
+            add(f"img-00004-{i:05d}.jpg", ("日期待確認_匿名化MRI（原標記20251126）", "序列-004"), knee_image(400 + i))
         add("notes.txt", (), b"not an image")
         self._order = list(self.files)
         random.Random(7).shuffle(self._order)
@@ -61,7 +66,7 @@ class MockDrive:
 
 @pytest.fixture
 def cfg(tmp_path: Path) -> Config:
-    return Config(cache_dir=tmp_path / "cache", ocr_langs="eng", workers=4)
+    return Config(cache_dir=tmp_path / "cache", ocr_langs="eng", workers=4, exclude_folders=["匿名化"])
 
 
 @pytest.fixture

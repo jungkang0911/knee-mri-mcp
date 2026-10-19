@@ -42,7 +42,7 @@ class Study:
 
     @property
     def id(self) -> str:
-        return f"{self.date}_{self.hospital}"
+        return f"{self.date}_{self.hospital}" if self.hospital else self.date
 
     def get_series(self, value: str | int) -> Series:
         try:
@@ -80,12 +80,19 @@ def _safe_label(name: str, pii_terms: list[str]) -> str:
     return name
 
 
-def build_index(files: list[DriveFile], study_types: dict[str, str], pii_terms: list[str]) -> Index:
+def build_index(
+    files: list[DriveFile], study_types: dict[str, str], pii_terms: list[str], exclude: list[str] | None = None
+) -> Index:
     issues: list[str] = []
     studies: dict[tuple[str, str], Study] = {}
     folder_text: dict[tuple[str, str], list[str]] = {}
+    modality: dict[tuple[str, str], str] = {}
+    excluded = 0
     for f in sorted(files, key=lambda x: (x.folders, x.name)):
         if not is_image_name(f.name):
+            continue
+        if exclude and any(term in folder for folder in f.folders for term in exclude):
+            excluded += 1
             continue
         p = parse_name(f.name, list(f.folders))
         label = _safe_label(f.name, pii_terms)
@@ -97,6 +104,8 @@ def build_index(files: list[DriveFile], study_types: dict[str, str], pii_terms: 
         key = (p.date, p.hospital)
         study = studies.setdefault(key, Study(p.date, p.hospital, "unknown"))
         folder_text.setdefault(key, []).extend(f.folders)
+        if p.modality:
+            modality.setdefault(key, p.modality)
         series = study.series.setdefault(p.series, Series(p.series))
         if any(s.index == p.index for s in series.slices):
             issues.append(f"{label}: duplicate image I{p.index:04d} in {study.id} S{p.series}; kept the first")
@@ -111,8 +120,11 @@ def build_index(files: list[DriveFile], study_types: dict[str, str], pii_terms: 
         study.kind = (
             study_types.get(study.id)
             or study_types.get(study.date)
+            or modality.get(key)
             or ("MRI" if _MRI_RE.search(text) else "X-ray" if _XR_RE.search(text) else "unknown")
         )
+    if excluded:
+        issues.append(f"excluded {excluded} images in folders matching KNEE_EXCLUDE_FOLDERS")
     ordered = sorted(studies.values(), key=lambda s: (s.date, s.hospital))
     return Index(ordered, issues)
 
@@ -120,8 +132,16 @@ def build_index(files: list[DriveFile], study_types: dict[str, str], pii_terms: 
 class Catalog:
     """Caches the Drive listing for `ttl` seconds so new uploads (e.g. a 2026 MRI) show up automatically."""
 
-    def __init__(self, source: DriveSource, study_types: dict[str, str], pii_terms: list[str], ttl: float) -> None:
+    def __init__(
+        self,
+        source: DriveSource,
+        study_types: dict[str, str],
+        pii_terms: list[str],
+        ttl: float,
+        exclude: list[str] | None = None,
+    ) -> None:
         self.source = source
+        self.exclude = exclude or []
         self.study_types = study_types
         self.pii_terms = pii_terms
         self.ttl = ttl
@@ -132,6 +152,6 @@ class Catalog:
     def index(self, refresh: bool = False) -> Index:
         with self._lock:
             if refresh or self._index is None or time.monotonic() - self._at > self.ttl:
-                self._index = build_index(self.source.list_files(), self.study_types, self.pii_terms)
+                self._index = build_index(self.source.list_files(), self.study_types, self.pii_terms, self.exclude)
                 self._at = time.monotonic()
             return self._index
