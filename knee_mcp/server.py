@@ -129,7 +129,7 @@ def build_server(cfg: Config, service: KneeService, provider: OwnerAuthProvider 
         def go():
             content: list = []
             for r in service.slices(study, series, start, end, crop):
-                content += [_img(r), TextContent(text=r.caption)]
+                content += ([_img(r)] if r.png else []) + [TextContent(text=r.caption)]
             return CallToolResult(content=content)
 
         return await _run(go)

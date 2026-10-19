@@ -12,6 +12,7 @@ from .errors import KneeError
 
 BG = 24
 FG = 235
+PENDING = "pending"  # contact-sheet tile placeholder for an image that is still being masked
 
 
 def _font(size: int) -> ImageFont.ImageFont:
@@ -77,9 +78,10 @@ def contact_sheet(tiles: list[tuple[str, Image.Image | None]], cols: int, thumb:
         x = pad + c * (thumb + pad)
         y = pad + r * (thumb + label_h + pad)
         draw.text((x + 3, y + 2), label, fill=FG, font=font)
-        if img is None:
+        if img is None or isinstance(img, str):
             draw.rectangle((x, y + label_h, x + thumb - 1, y + label_h + thumb - 1), outline=90)
-            draw.text((x + 8, y + label_h + thumb // 2 - 8), "withheld", fill=140, font=font)
+            text = "masking..." if img == PENDING else "withheld"
+            draw.text((x + 8, y + label_h + thumb // 2 - 8), text, fill=140, font=font)
             continue
         t = img.convert("L").copy()
         t.thumbnail((thumb, thumb), Image.LANCZOS)

@@ -8,7 +8,7 @@ import json
 import os
 import threading
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -121,6 +121,14 @@ class Processor:
             self._write(meta, json.dumps({"overlay": ov.__dict__, "status": "overlay"}).encode())
             return ov
 
+    def is_cached(self, f: DriveFile) -> bool:
+        """True when redacted() can answer from disk (a finished result, masked or withheld)."""
+        meta = self.dir / f"{self._key(f)}.json"
+        if not meta.exists():
+            return False
+        status = json.loads(meta.read_text("utf-8")).get("status")
+        return status == "failed" or (status == "ok" and (self.dir / f"{self._key(f)}.png").exists())
+
     def redacted(self, f: DriveFile) -> tuple[Image.Image, Overlay]:
         key = self._key(f)
         png, meta = self.dir / f"{key}.png", self.dir / f"{key}.json"
@@ -169,6 +177,8 @@ class KneeService:
         files = FileCache(cfg.cache_dir, keep=cfg.keep_raw)
         self.metas = DicomMetaStore(cfg, source, files)
         self.pool = ThreadPoolExecutor(max_workers=max(1, cfg.workers))
+        self._inflight: dict[str, Future] = {}
+        self._inflight_lock = threading.Lock()
         self.catalog = Catalog(
             source, cfg.study_types, cfg.pii_terms, cfg.listing_ttl, cfg.exclude_folders, self._load_dicom_metas
         )
@@ -230,15 +240,81 @@ class KneeService:
         except Exception:  # noqa: BLE001 - overlay text is best effort
             return None
 
+    # ---- background redaction with a response-time budget ----------------------
+    # First-time redaction of one image takes 20-60 s on a small server. Tools wait at most
+    # cfg.tool_budget seconds, return what is ready, and leave the rest running so a repeat call is fast.
+
+    def _submit(self, f: DriveFile) -> Future:
+        with self._inflight_lock:
+            fut = self._inflight.get(f.id)
+            if fut is None:
+                fut = self.pool.submit(self.proc.redacted, f)
+                self._inflight[f.id] = fut
+                fut.add_done_callback(lambda done, key=f.id: self._forget(key, done))
+            return fut
+
+    def _forget(self, key: str, fut: Future) -> None:
+        with self._inflight_lock:
+            if self._inflight.get(key) is fut:
+                del self._inflight[key]
+
+    def _gather(self, files: list[DriveFile]) -> list[tuple[str, object]]:
+        """Per file: ("ok", (img, overlay)) | ("withheld", None) | ("pending", None) | ("error", message)."""
+        # Finished results are read straight from disk so they never queue behind slow first-time jobs.
+        futs: list[Future] = []
+        for f in files:
+            if self.proc.is_cached(f):
+                fut: Future = Future()
+                try:
+                    fut.set_result(self.proc.redacted(f))
+                except Exception as e:  # noqa: BLE001 - surfaced per file below
+                    fut.set_exception(e)
+                futs.append(fut)
+            else:
+                futs.append(self._submit(f))
+        wait(futs, timeout=self.cfg.tool_budget)
+        out: list[tuple[str, object]] = []
+        for fut in futs:
+            if not fut.done():
+                out.append(("pending", None))
+                continue
+            exc = fut.exception()
+            if exc is None:
+                out.append(("ok", fut.result()))
+            elif isinstance(exc, RedactionFailed):
+                out.append(("withheld", None))
+            elif isinstance(exc, KneeError):
+                out.append(("error", str(exc)))
+            else:
+                raise exc
+        return out
+
+    def _one_ready(self, f: DriveFile, label: str) -> tuple[Image.Image, Overlay]:
+        state, val = self._gather([f])[0]
+        if state == "ok":
+            return val  # type: ignore[return-value]
+        if state == "pending":
+            raise KneeError(f"{label} is still being masked (the first view of an image can take up to a minute "
+                            "on this server); call again in about a minute")
+        if state == "withheld":
+            raise RedactionFailed()
+        raise KneeError(str(val))
+
     def contact_sheet(self, study: str, series: str | int, cols: int = 5) -> Rendered:
         st, se = self._resolve(study, series)
-        results = list(self.pool.map(self._try_redacted, [s.file for s in se.slices]))
-        tiles = [(f"I{s.index:04d}", img) for s, img in zip(se.slices, results)]
+        results = self._gather([s.file for s in se.slices])
+        tiles = []
+        for s, (state, val) in zip(se.slices, results):
+            img = val[0] if state == "ok" else imaging.PENDING if state == "pending" else None  # type: ignore[index]
+            tiles.append((f"I{s.index:04d}", img))
         sheet = imaging.contact_sheet(tiles, cols)
-        withheld = sum(1 for _, img in tiles if img is None)
         caption = f"{st.id} S{se.number}: {len(tiles)} images, I{se.slices[0].index:04d}-I{se.slices[-1].index:04d}"
+        withheld = sum(1 for state, _ in results if state in ("withheld", "error"))
+        pending = sum(1 for state, _ in results if state == "pending")
         if withheld:
             caption += f"; {withheld} withheld (redaction check failed)"
+        if pending:
+            caption += f"; {pending} still being masked (tiles say 'masking...'); call get_contact_sheet again in a minute"
         return Rendered(imaging.to_png(sheet, self.cfg.max_png_bytes), caption)
 
     def _try_redacted(self, f: DriveFile) -> Image.Image | None:
@@ -250,7 +326,7 @@ class KneeService:
     def slice(self, study: str, series: str | int, index: int, crop=None, zoom: float = 1) -> Rendered:
         st, se = self._resolve(study, series)
         sl = se.get(int(index))
-        img, ov = self.proc.redacted(sl.file)
+        img, ov = self._one_ready(sl.file, f"I{sl.index:04d}")
         out = imaging.apply_zoom(imaging.apply_crop(img, crop), zoom)
         caption = _caption(st, se, sl, ov) + f" | size {img.width}x{img.height}"
         if crop:
@@ -258,6 +334,7 @@ class KneeService:
         return Rendered(imaging.to_png(out, self.cfg.max_png_bytes), caption)
 
     def slices(self, study: str, series: str | int, start: int, end: int, crop=None) -> list[Rendered]:
+        """Ready images as PNG; images still being masked or withheld come back as text-only entries (png=b"")."""
         st, se = self._resolve(study, series)
         lo, hi = sorted((int(start), int(end)))
         chosen = [s for s in se.slices if lo <= s.index <= hi]
@@ -265,22 +342,43 @@ class KneeService:
             raise KneeError(f"no images between I{lo:04d} and I{hi:04d} in S{se.number}")
         if len(chosen) > MAX_SLICES:
             raise KneeError(f"range has {len(chosen)} images; at most {MAX_SLICES} per call")
-
-        def one(sl: Slice) -> Rendered:
-            img, ov = self.proc.redacted(sl.file)
-            return Rendered(imaging.to_png(imaging.apply_crop(img, crop), self.cfg.max_png_bytes), _caption(st, se, sl, ov))
-
-        return list(self.pool.map(one, chosen))
+        out: list[Rendered] = []
+        pending: list[str] = []
+        for sl, (state, val) in zip(chosen, self._gather([s.file for s in chosen])):
+            label = f"I{sl.index:04d}"
+            if state == "ok":
+                img, ov = val  # type: ignore[misc]
+                png = imaging.to_png(imaging.apply_crop(img, crop), self.cfg.max_png_bytes)
+                out.append(Rendered(png, _caption(st, se, sl, ov)))
+            elif state == "pending":
+                pending.append(label)
+            elif state == "withheld":
+                out.append(Rendered(b"", f"{st.id} S{se.number} {label}: withheld (redaction check failed)"))
+            else:
+                out.append(Rendered(b"", f"{st.id} S{se.number} {label}: {val}"))
+        if pending:
+            out.append(Rendered(b"", f"still being masked: {', '.join(pending)}. The first view of an image can take "
+                                     "up to a minute on this server; call get_slices again for these in about a minute."))
+        return out
 
     def compare(self, a: dict, b: dict) -> Rendered:
-        imgs, labels = [], []
+        refs = []
         for ref in (a, b):
             st, se = self._resolve(ref["study"], ref["series"])
-            sl = se.get(int(ref["index"]))
-            img, ov = self.proc.redacted(sl.file)
-            imgs.append(imaging.apply_crop(img, ref.get("crop")))
-            label = " ".join(x for x in (st.date, st.hospital, f"S{se.number}", f"I{sl.index:04d}", ov.plane) if x)
-            labels.append(label)
+            refs.append((st, se, se.get(int(ref["index"])), ref.get("crop")))
+        results = self._gather([sl.file for _, _, sl, _ in refs])
+        pending = [f"{st.date} I{sl.index:04d}" for (st, _, sl, _), (state, _) in zip(refs, results) if state == "pending"]
+        if pending:
+            raise KneeError(f"still being masked: {', '.join(pending)}; call compare again in about a minute")
+        imgs, labels = [], []
+        for (st, se, sl, crop), (state, val) in zip(refs, results):
+            if state == "withheld":
+                raise RedactionFailed()
+            if state == "error":
+                raise KneeError(str(val))
+            img, ov = val  # type: ignore[misc]
+            imgs.append(imaging.apply_crop(img, crop))
+            labels.append(" ".join(x for x in (st.date, st.hospital, f"S{se.number}", f"I{sl.index:04d}", ov.plane) if x))
         out = imaging.side_by_side(imgs[0], labels[0], imgs[1], labels[1])
         return Rendered(imaging.to_png(out, self.cfg.max_png_bytes), f"left: {labels[0]} | right: {labels[1]}")
 

@@ -35,6 +35,7 @@ class Config:
     max_png_bytes: int = 1_000_000
     workers: int = 4
     exclude_folders: list[str] = field(default_factory=list)  # skip images under folders containing these
+    tool_budget: float = 40.0  # seconds a tool waits for first-time redaction before answering 'still masking'
     keep_raw: bool = False  # cache unmasked originals on disk (off: download, redact, discard)
 
     @classmethod
@@ -75,5 +76,6 @@ class Config:
             listing_ttl=float(env.get("KNEE_LISTING_TTL", "300")),
             workers=int(env.get("KNEE_WORKERS", "4")),
             exclude_folders=_split(env.get("KNEE_EXCLUDE_FOLDERS")),
+            tool_budget=float(env.get("KNEE_TOOL_BUDGET", "40")),
             keep_raw=env.get("KNEE_KEEP_RAW", "0").lower() in ("1", "true", "yes"),
         )
