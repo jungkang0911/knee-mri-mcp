@@ -1,5 +1,0 @@
-.................................ss.                                     [100%]
-=========================== short test summary info ============================
-SKIPPED [1] tests/test_optional_integrations.py:8: Official MCP SDK not installed; NOT a passing MCP integration test
-SKIPPED [1] tests/test_optional_integrations.py:18: pydicom not installed; DICOM runtime validation NOT completed
-34 passed, 2 skipped in 0.48s

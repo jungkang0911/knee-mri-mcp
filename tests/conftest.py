@@ -1,46 +1,79 @@
+from __future__ import annotations
+
+import random
+import sys
 from pathlib import Path
-import numpy as np
+
 import pytest
-from PIL import Image,ImageDraw
-from knee_mri.common import json_write,sha256
-from knee_mri.dataset import release
-from knee_mri.imaging import contact_sheet
-from knee_mri.metadata import laterality_note
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from synth import knee_image  # noqa: E402
+
+from knee_mcp.config import Config  # noqa: E402
+from knee_mcp.drive import DriveFile  # noqa: E402
+from knee_mcp.server import build_server  # noqa: E402
+from knee_mcp.service import KneeService  # noqa: E402
+
+MTIME = "2025-01-01T00:00:00.000Z"
+
+
+class MockDrive:
+    """Stands in for Google Drive: a fixed listing (deliberately shuffled) and synthetic JPEGs."""
+
+    def __init__(self) -> None:
+        self.files: dict[str, tuple[DriveFile, bytes]] = {}
+        self.downloads = 0
+        n = 0
+
+        def add(name: str, folders: tuple[str, ...], data: bytes, mtime: str = MTIME) -> None:
+            nonlocal n
+            n += 1
+            fid = f"f{n:04d}"
+            self.files[fid] = (DriveFile(fid, name, folders, mtime), data)
+
+        # 2019 TSGH MRI, series 7: 20 images with fake PII burned in.
+        for i in range(1, 21):
+            add(f"2019-03-20_TSGH_RK_S7_I{i:04d}.jpg", ("2019-03-20_TSGH_MRI",),
+                knee_image(i, plane="COR PD", sl=f"{-30 + 3 * i:.1f}", st="3.0"))
+        # 2024 VGHTPE MRI: series 4 split across "S4" and "S04" names.
+        for i in range(1, 4):
+            add(f"2024-12-03_VGHTPE_RK_S4_I{i:04d}.jpg", ("2024-12-03_VGHTPE_MRI",),
+                knee_image(100 + i, plane="SAG PD", pii=False))
+        for i in range(4, 6):
+            add(f"2024-12-03_VGHTPE_RK_S04_I{i:04d}.jpg", ("2024-12-03_VGHTPE_MRI",),
+                knee_image(100 + i, plane="SAG PD", pii=False))
+        add("2024-12-03_VGHTPE_RK_S5_I0099.jpg", ("2024-12-03_VGHTPE_MRI",), knee_image(199, plane="AX T2 FS", pii=False))
+        # 2018 X-ray with names that break the rule -> folder inference + issues.
+        for i in range(1, 3):
+            add(f"img-00001-{i:05d}.jpg", ("2018-12-31_TSGH_XR", "S1"), knee_image(200 + i, plane="", pii=False))
+        add("notes.txt", (), b"not an image")
+        self._order = list(self.files)
+        random.Random(7).shuffle(self._order)
+
+    def list_files(self) -> list[DriveFile]:
+        return [self.files[k][0] for k in self._order if self.files[k][0].name.lower().endswith((".jpg", ".png"))]
+
+    def download(self, file: DriveFile) -> bytes:
+        self.downloads += 1
+        return self.files[file.id][1]
+
 
 @pytest.fixture
-def demo_dataset(tmp_path):
-    root=tmp_path/"dataset";root.mkdir()
-    rows=[];sources=[]
-    for index in range(1,4):
-        y,x=np.mgrid[:256,:256]
-        a=np.clip(150*np.exp(-((x-128)**2+(y-125)**2)/5000)+index*x/8,0,255).astype(np.uint8)
-        im=Image.fromarray(a)
-        rel=f"studies/2019-03-20_TSGH/s07_COR_PD/{index:04}.png"
-        path=root/rel;path.parent.mkdir(parents=True,exist_ok=True);im.save(path)
-        sid=f"synthetic_{index}"
-        pixelpath=None;pixelhash=None
-        if index==1:
-            mask=np.zeros(a.shape,dtype=np.uint8);mask[:20,:80]=1
-            pixels=a.astype(np.float32)*10;pixels[mask.astype(bool)]=0
-            pp=path.with_suffix(".npz");np.savez_compressed(pp,pixels=pixels,mask=mask,invert=np.array(False))
-            pixelpath=pp.relative_to(root).as_posix();pixelhash=sha256(pp)
-        rows.append({"study_id":"2019-03-20_TSGH","date":"2019-03-20","hospital":"TSGH","pre_or_post_op":"pre_op",
-                     "series_no":7,"series_desc":"COR_PD","plane":"coronal","weighting":"PD","fat_sat":False,
-                     "index":index,"count":3,"slice_thickness_mm":4.,"slice_location_mm":index*4.,"window":[1280,2560],
-                     "source_id":sid,"source_path":"source://"+sid,"sha256":"0"*64,"duplicate_of":None,
-                     "dimensions":[256,256],"orientation_verified":True,"laterality_note":laterality_note("coronal",True),
-                     "source_format":"DICOM" if index==1 else "JPEG","path":rel,"png_sha256":sha256(path),
-                     "pixel_data_path":pixelpath,"pixel_data_sha256":pixelhash})
-        sources.append({"source_id":sid,"duplicate_of":None,"status":"canonical"})
-    sheet=contact_sheet([(s["index"],Image.open(root/s["path"])) for s in rows])
-    sr="contact_sheets/2019-03-20_TSGH/s07_COR_PD.png";p=root/sr;p.parent.mkdir(parents=True);sheet.save(p)
-    series=[{"study_id":"2019-03-20_TSGH","series_no":7,"series_desc":"COR_PD","plane":"coronal","weighting":"PD",
-             "fat_sat":False,"count":3,"declared_count":3,"slice_thickness_mm":4.,"contact_sheet_path":sr,"contact_sheet_sha256":sha256(p)}]
-    m={"schema_version":1,"studies":[{"study_id":"2019-03-20_TSGH","date":"2019-03-20","hospital":"TSGH","pre_or_post_op":"pre_op"}],
-       "series":series,"slices":rows,"sources":sources,"issues":[],"statistics":{"source_image_frames":3,"duplicates":0,"raw_unchanged":True}}
-    json_write(root/"manifest.json",m)
-    # Deliberately synthetic images only: tests may approve their own non-clinical fixture.
-    json_write(root/"review.json",{"slices":{s["source_id"]:{"approved":True,"phi_free":True,"anatomy_preserved":True,
-                                  "png_sha256":s["png_sha256"],"pixel_data_sha256":s["pixel_data_sha256"],"all_dicom_windows_checked":True} for s in rows}})
-    release(root)
-    return root
+def cfg(tmp_path: Path) -> Config:
+    return Config(cache_dir=tmp_path / "cache", ocr_langs="eng", workers=4)
+
+
+@pytest.fixture
+def drive() -> MockDrive:
+    return MockDrive()
+
+
+@pytest.fixture
+def service(cfg: Config, drive: MockDrive) -> KneeService:
+    return KneeService(cfg, drive)
+
+
+@pytest.fixture
+def server(cfg: Config, service: KneeService):
+    return build_server(cfg, service)

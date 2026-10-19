@@ -1,27 +1,15 @@
-raw/
-dataset*/
-.private/
-.secrets/
-.env
 .venv/
 __pycache__/
 *.pyc
 .pytest_cache/
-synthetic-run/
-*.egg-info/
-
-# Keep medical images, derived pixels and credentials out of Git.
+# Drive downloads (contain PII), redacted cache, OAuth state, Google tokens
+.cache/
+cache/
+*.token.json
+google-token.json
+client_secret*.json
+service-account*.json
+.env
 .env.*
 !.env.example
-*.dcm
-DICOMDIR
-*.jpg
-*.jpeg
-*.png
-*.tif
-*.tiff
-*.npy
-*.npz
-*.zip
-*.pem
-*.key
+*.log

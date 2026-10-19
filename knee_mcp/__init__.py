@@ -1,0 +1,1 @@
+"""Knee imaging MCP server."""
