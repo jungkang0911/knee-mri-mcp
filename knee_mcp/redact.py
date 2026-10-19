@@ -19,7 +19,8 @@ from PIL import Image, ImageDraw, ImageOps
 
 from .errors import RedactionFailed
 
-REDACTION_VERSION = "3"
+REDACTION_VERSION = "5"
+MAX_MASK_PASSES = 6
 
 ORIENTATION = {"R", "L", "A", "P", "S", "I"}
 TECH_KEYS = {
@@ -69,8 +70,11 @@ def ocr_words(img: Image.Image, langs: str) -> list[Word]:
     big = gray.resize((round(gray.width * scale), round(gray.height * scale)), Image.LANCZOS) if scale > 1 else gray
     words: list[Word] = []
     # Overlay text is usually light-on-dark; Tesseract reads dark-on-light best, so try both polarities.
-    for variant, im in enumerate((ImageOps.invert(big), big)):
-        data = pytesseract.image_to_data(im, lang=langs, config="--psm 11", output_type=pytesseract.Output.DICT)
+    # Two page-segmentation modes: sparse text (11) finds scattered labels, uniform block (6) finds
+    # tightly packed corner text that psm 11 misses (seen on real 2019 overlays: a name at the edge).
+    runs = [(ImageOps.invert(big), "--psm 11"), (big, "--psm 11"), (ImageOps.invert(big), "--psm 6"), (big, "--psm 6")]
+    for variant, (im, config) in enumerate(runs):
+        data = pytesseract.image_to_data(im, lang=langs, config=config, output_type=pytesseract.Output.DICT)
         for i, raw in enumerate(data["text"]):
             text = (raw or "").strip()
             if not text:
@@ -113,8 +117,10 @@ def _should_mask(word: Word, allowed: bool, size: tuple[int, int]) -> bool:
     # Overlay text sits in the margins: mask anything there. In the central (anatomy) area, low-confidence
     # "words" are texture noise; masking them would black out anatomy, so only confident text is masked.
     # The verification pass uses the same confidence floor, so nothing legible can slip between the two.
-    if _is_border(word.box, size) or _CJK_RE.search(word.text):
+    if _is_border(word.box, size):
         return True
+    if _CJK_RE.search(word.text):
+        return word.conf >= CENTRAL_CONF
     a = _alnum(word.text)
     if len(a) < 2:  # lone symbols / single characters in the texture carry no identity
         return False
@@ -130,9 +136,9 @@ def _is_residual(word: Word, allowed: bool, size: tuple[int, int], pii_terms: li
     a = _alnum(text)
     if re.search(r"\d{4,}", a) and word.conf >= 30:
         return True
-    if _CJK_RE.search(text) and word.conf >= 50:
-        return True
     floor = 50 if _is_border(word.box, size) else CENTRAL_CONF
+    if _CJK_RE.search(text) and word.conf >= floor:
+        return True
     return len(a) >= 3 and word.conf >= floor
 
 
@@ -197,12 +203,13 @@ def redact(
 
     words = ocr_words(img, langs)
     overlay = read_overlay(words)
-    _mask(img, words, _allowed_flags(words))
-    # Second masking pass catches words that only become legible once neighbours are gone.
-    words2 = ocr_words(img, langs)
-    _mask(img, words2, _allowed_flags(words2))
-
-    final = ocr_words(img, langs)
+    # Some text (e.g. a name squeezed against the image edge next to other text) only becomes legible
+    # once its neighbours are masked, so keep OCR-ing and masking until a pass finds nothing new.
+    final = words
+    for _ in range(MAX_MASK_PASSES):
+        if _mask(img, final, _allowed_flags(final)) == 0:
+            break  # image unchanged since `final` was read: it doubles as the verification pass
+        final = ocr_words(img, langs)
     flags = _allowed_flags(final)
     if any(_is_residual(w, ok, img.size, terms) for w, ok in zip(final, flags)):
         raise RedactionFailed()
