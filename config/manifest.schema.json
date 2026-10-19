@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Knee MRI manifest v1 (pending manifests can have null technical fields; release forbids missing required values)",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "studies",
+    "series",
+    "slices",
+    "sources",
+    "issues",
+    "statistics"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "studies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "study_id",
+          "date",
+          "hospital",
+          "pre_or_post_op"
+        ]
+      }
+    },
+    "series": {
+      "type": "array"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "source_id",
+          "source_path",
+          "sha256",
+          "duplicate_of",
+          "status"
+        ]
+      }
+    },
+    "issues": {
+      "type": "array"
+    },
+    "statistics": {
+      "type": "object"
+    },
+    "slices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "study_id",
+          "date",
+          "hospital",
+          "pre_or_post_op",
+          "series_no",
+          "series_desc",
+          "plane",
+          "weighting",
+          "fat_sat",
+          "index",
+          "count",
+          "slice_thickness_mm",
+          "slice_location_mm",
+          "window",
+          "source_path",
+          "sha256",
+          "duplicate_of",
+          "laterality_note",
+          "path",
+          "png_sha256"
+        ],
+        "properties": {
+          "study_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "pre_or_post_op": {
+            "enum": [
+              "pre_op",
+              "post_op",
+              "unknown"
+            ]
+          },
+          "plane": {
+            "enum": [
+              "axial",
+              "coronal",
+              "sagittal",
+              null
+            ]
+          },
+          "weighting": {
+            "enum": [
+              "T1",
+              "PD",
+              "T2",
+              null
+            ]
+          },
+          "fat_sat": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source_path": {
+            "type": "string",
+            "pattern": "^source://"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "png_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "duplicate_of": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "window": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "filename": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+_RK_S[0-9]{2,}_[A-Z0-9_]+_I[0-9]{4,}\\.png$"
+          },
+          "slice_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+_RK_S[0-9]{2,}_[A-Z0-9_]+_I[0-9]{4,}$"
+          }
+        }
+      }
+    },
+    "naming_version": {
+      "type": "string",
+      "enum": [
+        "descriptive-v1"
+      ]
+    }
+  }
+}

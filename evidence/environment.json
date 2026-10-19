@@ -1,0 +1,14 @@
+{
+  "mcp": false,
+  "pydicom": false,
+  "PIL": true,
+  "numpy": true,
+  "scipy": true,
+  "pytesseract": true,
+  "yaml": true,
+  "uvicorn": true,
+  "httpx": true,
+  "tesseract": true,
+  "npx": true,
+  "docker": false
+}

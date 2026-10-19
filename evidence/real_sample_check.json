@@ -1,0 +1,47 @@
+{
+  "scope": "3 existing JPEG samples only, NOT full raw dataset",
+  "statistics": {
+    "source_image_files": 3,
+    "source_image_frames": 3,
+    "unique_slices": 2,
+    "duplicates": 1,
+    "unresolved_or_failed": 0,
+    "series": 2,
+    "errors": 5,
+    "raw_unchanged": true
+  },
+  "issue_codes": [
+    "RESIDUAL_TEXT_DETECTED",
+    "SERIES_COUNT_OR_INDEX_MISMATCH",
+    "OCR_FILENAME_CONFLICT",
+    "RESIDUAL_TEXT_DETECTED",
+    "SERIES_COUNT_OR_INDEX_MISMATCH"
+  ],
+  "source_dispositions": [
+    {
+      "source_id": "017262a17024ab99fce8a1cf",
+      "status": "canonical",
+      "duplicate_of": null,
+      "match": null
+    },
+    {
+      "source_id": "031a405facdc9d4798737dcd",
+      "status": "canonical",
+      "duplicate_of": null,
+      "match": null
+    },
+    {
+      "source_id": "b66c6253f4e898764e73b458",
+      "status": "duplicate",
+      "duplicate_of": "017262a17024ab99fce8a1cf",
+      "match": {
+        "phash_distance": 2,
+        "ncc": 0.99782775,
+        "rmse": 0.01017754,
+        "match": true
+      }
+    }
+  ],
+  "release_status": "NOT_RELEASED",
+  "deid_note": "Ambiguous OCR inside tissue is left for human review rather than blindly erased."
+}

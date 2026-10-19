@@ -1,0 +1,27 @@
+raw/
+dataset*/
+.private/
+.secrets/
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+synthetic-run/
+*.egg-info/
+
+# Keep medical images, derived pixels and credentials out of Git.
+.env.*
+!.env.example
+*.dcm
+DICOMDIR
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+*.npy
+*.npz
+*.zip
+*.pem
+*.key

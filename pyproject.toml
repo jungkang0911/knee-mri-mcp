@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "knee-mri-mcp"
+version = "0.1.1"
+description = "Local MRI curation and a private, read-only MCP ImageContent server"
+requires-python = ">=3.11"
+dependencies = [
+  "mcp[cli]>=1.28,<2", # official SDK v1 FastMCP API, not the separate fastmcp package
+  "Pillow>=11.3,<13", "numpy>=2,<3", "scipy>=1.14,<2",
+  "pydicom>=3.0.1,<4", "pytesseract>=0.3.13,<0.4", "PyYAML>=6,<7",
+  "uvicorn>=0.35,<1", "httpx>=0.28,<1"
+]
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2"]
+compressed-dicom = ["pylibjpeg>=2,<3", "pylibjpeg-libjpeg>=2,<3", "pylibjpeg-openjpeg>=2,<3"]
+[project.scripts]
+knee-mri = "knee_mri.cli:main"
+knee-mri-server = "knee_mri.server:main"
+[tool.setuptools.packages.find]
+where = ["src"]
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

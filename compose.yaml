@@ -1,0 +1,37 @@
+services:
+  mri:
+    build: .
+    user: "${MRI_UID:-1000}:${MRI_GID:-1000}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 2
+    ports: ["127.0.0.1:48080:8000"]
+    environment:
+      MRI_DATASET: /dataset
+      MRI_BIND: 0.0.0.0
+      MRI_TOKEN_FILE: /run/secrets/mri_token
+      MRI_ALLOWED_HOSTS: "${MRI_DOMAIN:?Set MRI_DOMAIN},127.0.0.1:48080,localhost:48080"
+      MRI_ALLOWED_ORIGINS: "https://${MRI_DOMAIN},http://localhost:6274,http://127.0.0.1:6274"
+    volumes:
+      - ./dataset:/dataset:ro
+      - ./.secrets/mri_token:/run/secrets/mri_token:ro
+    tmpfs: [/tmp]
+  caddy:
+    profiles: [edge]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      MRI_DOMAIN: "${MRI_DOMAIN:?Set MRI_DOMAIN}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [mri]
+volumes:
+  caddy_data:
+  caddy_config:

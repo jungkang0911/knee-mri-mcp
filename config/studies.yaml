@@ -1,0 +1,37 @@
+# Local configuration; paths are relative to --raw. Never derive study dates from file modification time.
+# Use neutral directory names under raw where practical. Unknown files become blocking issues.
+studies:
+  - study_id: 2019-03-20_TSGH
+    date: '2019-03-20'
+    hospital: TSGH
+    pre_or_post_op: pre_op
+    # Add the real folder prefix if the download is named differently.
+    path_regex: '(?i)(2019[-_]?03[-_]?20|201903|2018-2019|^序列-00[6-9]/|^序列-010/)'
+    expected_series_counts: {6: 20, 7: 20, 8: 20, 9: 20, 10: 20}
+    radiological_orientation_confirmed: false
+  - study_id: 2024-12-03_VGHTPE
+    date: '2024-12-03'
+    hospital: VGHTPE
+    pre_or_post_op: post_op
+    path_regex: '(?i)(2024[-_]?12[-_]?03|20241203|矢狀面_PD\+T2 FSE|右膝_橫切面_T2|冠狀面_3D MERGE|冠狀面_T2脂肪抑制)'
+    expected_series_counts: {}
+    radiological_orientation_confirmed: false
+aliases:
+  - path_regex: '(?i)(匿名|anonymized|20251126)'
+    canonical_study_id: 2019-03-20_TSGH
+    # Alias series numbers are NOT trusted: only a unique anatomical-pixel match can link a duplicate.
+# Optional exact mappings, keyed by source_id from inventory. Do not put patient names here.
+# Each override is explicit human correction of technical metadata, not a diagnosis.
+overrides: {}
+# e.g. source_id: {series_no: 7, index: 13, count: 20, plane: coronal,
+#                 weighting: PD, fat_sat: false, series_desc: COR_PD,
+#                 metadata_reviewed: true, orientation_verified: true}
+# Manually verified duplicate links when DICOM and JPEG have different dimensions/windowing:
+# source_id: canonical_source_id (the reviewer must inspect both; never auto-link neighbouring slices).
+duplicate_overrides: {}
+# Additional boxes are image-specific and keyed by source_id, not fixed corner masks.
+extra_redaction_boxes: {}
+
+# Optional: human-verified OCR false positives INSIDE anatomy, keyed by source_id (includes source hash).
+# Never use this to exempt an actual name/ID, and never ignore the whole image.
+verified_nontext_boxes: {}

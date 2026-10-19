@@ -1,0 +1,182 @@
+{
+  "description": "Code-only upload allowlist; no medical images or credentials.",
+  "files": [
+    {
+      "path": ".dockerignore",
+      "sha256": "8b6d1783907598d90f2119d9cb09310ba88126885baeabdc610230832b9a5fd1"
+    },
+    {
+      "path": ".env.example",
+      "sha256": "b88c56ba0349262196a3b905a0f1651a3b698a579ce1e8b80d2f3e0f2811d0dd"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "044943b6590f8cc1ea1e90fcf76fbfcb7fc1514bb7fb0276538390bbb986f5c5"
+    },
+    {
+      "path": "Caddyfile",
+      "sha256": "9219505e213cfea39c7677522edfb6fdf5285fd0a9b67b777afd4a328fd12607"
+    },
+    {
+      "path": "Dockerfile",
+      "sha256": "6989ffa19c2c1dd5c09fa75aa8abd7234e9bea204d90ff4846e6367eec12016f"
+    },
+    {
+      "path": "README.md",
+      "sha256": "04f0fd6eaa3d4a42ce530d3d5cccdfc7e87d37597725e0d507e6d94fd6b17dee"
+    },
+    {
+      "path": "compose.yaml",
+      "sha256": "216b6b3ea1d67e166bb973c2843a564f46475e3c6c00da65554691af9d721d58"
+    },
+    {
+      "path": "config/manifest.schema.json",
+      "sha256": "9108619af31fda58e2eb67d6fd497dc3cdbbae82ddeae82c8be2601d8bca2833"
+    },
+    {
+      "path": "config/studies.yaml",
+      "sha256": "a69bdef091be1598f3d017304ef4e275b08ef42ac064c260619d79bae5d46e18"
+    },
+    {
+      "path": "docs/DELIVERY_STATUS.md",
+      "sha256": "5100c8ef2ebd699ab5cdcf4d70f658cd94d1b32bc3a48efc492486d2e825de6f"
+    },
+    {
+      "path": "docs/NAMING_UPDATE.md",
+      "sha256": "ac23417f68138f717225ceab1b6b52461596f669cc37955ca70fafb90ed3dd82"
+    },
+    {
+      "path": "docs/SECURITY.md",
+      "sha256": "50d0fe78c338b9a703d03c4551a9c8969bc9cf856aa9772c4407cad77953a684"
+    },
+    {
+      "path": "docs/nginx.conf.example",
+      "sha256": "673ea8ec6b26356db3c91da6d5c20a104e4f9514486fc45299f306dfbb6645fc"
+    },
+    {
+      "path": "evidence/environment.json",
+      "sha256": "01361b36b2e9e340989f6e025f2118f6d749dee6db49ef4d99c3f9c9bcf19b1a"
+    },
+    {
+      "path": "evidence/inspector_status.json",
+      "sha256": "e16ab453573cf312e8962f66612d7adfdbb2931f872d5926f83b40046161333a"
+    },
+    {
+      "path": "evidence/naming-pytest-summary.txt",
+      "sha256": "9de328e98f4b164f8de6afc36ebdcb2cce1a3f7b11d14a8c1305fd96d32a1269"
+    },
+    {
+      "path": "evidence/naming-pytest.xml",
+      "sha256": "3a928366cefd9a9fa4cee0f8abf6a7103756cfc337ca105fdc2fa51d74e66c96"
+    },
+    {
+      "path": "evidence/pytest-summary.txt",
+      "sha256": "2aa10bc20b764bcb51c124a15a45a20dcdcd10218cd9a4e15af006c93fba7b1c"
+    },
+    {
+      "path": "evidence/pytest.xml",
+      "sha256": "b195659f0a17c8fc2dd4922b8f00e492f00d188d962fe842c9b249cd803d6555"
+    },
+    {
+      "path": "evidence/real_sample_check.json",
+      "sha256": "f5b628053e70588e7902a4ef61c5a3f6cf22ddea0f77441083dfaa49d4fa1aa2"
+    },
+    {
+      "path": "pyproject.toml",
+      "sha256": "edf7ebd3b4c8c581a9937e73bea6f6f84e51875c3241ba5f9ec4a76d7abe1b42"
+    },
+    {
+      "path": "scripts/check_inspector.py",
+      "sha256": "45cb191b555e9b0be3e1ce7a63bbb2787d03fc33ed210d1474cbfb36292eb293"
+    },
+    {
+      "path": "scripts/make_test_dataset.py",
+      "sha256": "74b2288b31771fce78389f41bcf74721959db7c113af8ea2c381ccd2b064da82"
+    },
+    {
+      "path": "scripts/preflight.py",
+      "sha256": "31a3177011bb09374c44605bb4c694ddbe5212a32607276771fd72efe6ed94b6"
+    },
+    {
+      "path": "scripts/publish_github.py",
+      "sha256": "a641d2a8b5fb7e6b04ec561d7e810cbed728773f9a942a85b99a18569edcd7a9"
+    },
+    {
+      "path": "scripts/setup_secrets.py",
+      "sha256": "24ebe0ec4ba54d64a34f5bcd9209cf78b4dd5c5fa9b9e462f3426e92bb7ea73e"
+    },
+    {
+      "path": "src/knee_mri/__init__.py",
+      "sha256": "28f1a5f5e34eb2ece88047b81b72cad3a71375c3c9db71f4eea8562d8dc8cf85"
+    },
+    {
+      "path": "src/knee_mri/auth.py",
+      "sha256": "85fdfca2b4ddc44c2c13368f3042805172a2fb04afb0198e8ee1fc43ffc06712"
+    },
+    {
+      "path": "src/knee_mri/build.py",
+      "sha256": "4a8a680277a20ba745f54b7be544340f1b96802c45ed6926170028e08d1dd152"
+    },
+    {
+      "path": "src/knee_mri/cli.py",
+      "sha256": "931e00100c70781059f509ce14db0cb9f8e37c78a1487fec541f119366fb6d34"
+    },
+    {
+      "path": "src/knee_mri/common.py",
+      "sha256": "a483f46c5590329fcfae90448a5c64ecde7b7581dd4ca9aaf20a7931069698ad"
+    },
+    {
+      "path": "src/knee_mri/dataset.py",
+      "sha256": "5a080bae7dc4b802d62d4a69155dbb8c9b06544391f34d0b85c621a9d9dad36f"
+    },
+    {
+      "path": "src/knee_mri/deid.py",
+      "sha256": "20d1ba5b188bbeafa2de377ba2cdfcad314bc0335ffbffdc84175304ad08e6fd"
+    },
+    {
+      "path": "src/knee_mri/dicom_io.py",
+      "sha256": "dcd460b42c041eac1981930a8a1463923c58fbb8a9d7e90cd90cc5f807b5996b"
+    },
+    {
+      "path": "src/knee_mri/imaging.py",
+      "sha256": "7f1604ef1fb53953cae1ea716aead165f9c5874bddda81afb9d948d327ac8fa7"
+    },
+    {
+      "path": "src/knee_mri/metadata.py",
+      "sha256": "1036f7d497a625c742c38480d534b385a7a0e3f299bf2f88c5767f8d94b97a37"
+    },
+    {
+      "path": "src/knee_mri/naming.py",
+      "sha256": "b1c515d02e89470791bdeef294aa8066aa93d3db290db4c66e727db399022a4c"
+    },
+    {
+      "path": "src/knee_mri/server.py",
+      "sha256": "a2f32c558867172f189edacd7bafa35354a09a5e53e838ff56d92f51397043f2"
+    },
+    {
+      "path": "tests/conftest.py",
+      "sha256": "9e5a3a69463e69caa45efbc8c80718ae65276cc7368f499990a100b2b4fc1b9e"
+    },
+    {
+      "path": "tests/test_builder.py",
+      "sha256": "b6a475400c4cc7042e2d97a9eae23df1142b989651ed0854c1e4d345d8687248"
+    },
+    {
+      "path": "tests/test_core.py",
+      "sha256": "ee40430ca7005f7cc0e4bff23d40a3dc9af70a910edf4bab3cb3a65c8f8b7deb"
+    },
+    {
+      "path": "tests/test_naming.py",
+      "sha256": "f9334cfe036c881f62a276d0bc70b33bbce4bfa61c9ed20900565ec48a945205"
+    },
+    {
+      "path": "tests/test_optional_integrations.py",
+      "sha256": "74a74ed5d773388a6abc65b92043845c1fe5396a92980cb0d7655ecfb01a77b1"
+    },
+    {
+      "path": "tests/test_static_contract.py",
+      "sha256": "732bf9fd045af7437569affb0cb24f21d11c6112b4d1698e46be140fdbed266b"
+    }
+  ],
+  "version": "0.1.1"
+}
