@@ -20,7 +20,8 @@ from PIL import Image, ImageDraw, ImageOps
 from .errors import RedactionFailed
 from .templates import Rect, apply_template
 
-REDACTION_VERSION = "8"
+REDACTION_VERSION = "9"
+TEXT_ZONE_MARGIN = 0.03  # how far around a template rectangle stray overlay text may still sit
 MAX_MASK_PASSES = 6
 
 ORIENTATION = {"R", "L", "A", "P", "S", "I"}
@@ -108,19 +109,34 @@ def _allowed_flags(words: list[Word]) -> list[bool]:
     return out
 
 
-def _is_border(box: tuple[int, int, int, int], size: tuple[int, int]) -> bool:
+def _is_border(box: tuple[int, int, int, int], size: tuple[int, int], zones: list[Rect] | None = None) -> bool:
+    """Is this box where overlay text lives?
+
+    Without a hospital template: the outer quarter of the image on every side. With a template: only near
+    the template rectangles (expanded by TEXT_ZONE_MARGIN); everything else is anatomy, which is verified
+    but never masked."""
     w, h = size
+    if zones is not None:
+        x0, y0, x1, y1 = box[0] / w, box[1] / h, box[2] / w, box[3] / h
+        return any(x0 < z[2] and x1 > z[0] and y0 < z[3] and y1 > z[1] for z in zones)
     cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
     return cx < 0.25 * w or cx > 0.75 * w or cy < 0.25 * h or cy > 0.75 * h
 
 
-def _should_mask(word: Word, allowed: bool, size: tuple[int, int]) -> bool:
+def text_zones(template: list[Rect] | None) -> list[Rect] | None:
+    if not template:
+        return None
+    m = TEXT_ZONE_MARGIN
+    return [(max(0.0, r[0] - m), max(0.0, r[1] - m), min(1.0, r[2] + m), min(1.0, r[3] + m)) for r in template]
+
+
+def _should_mask(word: Word, allowed: bool, size: tuple[int, int], zones: list[Rect] | None = None) -> bool:
     if allowed:
         return False
     # Overlay text sits in the margins: mask anything there. In the central (anatomy) area, low-confidence
     # "words" are texture noise; masking them would black out anatomy, so only confident text is masked.
     # The verification pass uses the same confidence floor, so nothing legible can slip between the two.
-    if _is_border(word.box, size):
+    if _is_border(word.box, size, zones):
         return True
     if _CJK_RE.search(word.text):
         return word.conf >= CENTRAL_CONF
@@ -130,14 +146,16 @@ def _should_mask(word: Word, allowed: bool, size: tuple[int, int]) -> bool:
     return word.conf >= CENTRAL_CONF or bool(re.search(r"\d{4,}", a))
 
 
-def _is_residual(word: Word, allowed: bool, size: tuple[int, int], pii_terms: list[str]) -> bool:
+def _is_residual(
+    word: Word, allowed: bool, size: tuple[int, int], pii_terms: list[str], zones: list[Rect] | None = None
+) -> bool:
     if allowed:
         return False
     text = word.text
     if any(t and t.lower() in text.lower() for t in pii_terms):
         return True
     a = _alnum(text)
-    border = _is_border(word.box, size)
+    border = _is_border(word.box, size, zones)
     if re.search(r"\d{4,}", a) and word.conf >= (30 if border else CENTRAL_CONF):
         return True
     floor = 50 if border else CENTRAL_VERIFY_CONF
@@ -149,7 +167,9 @@ def _is_residual(word: Word, allowed: bool, size: tuple[int, int], pii_terms: li
     return len(a) >= 3 and word.conf >= floor
 
 
-def _center_cjk_pairs(words: list[Word], flags: list[bool], size: tuple[int, int]) -> bool:
+def _center_cjk_pairs(
+    words: list[Word], flags: list[bool], size: tuple[int, int], zones: list[Rect] | None = None
+) -> bool:
     """Two single CJK characters side by side, both text-sized and confident, inside the anatomy area.
 
     OCR sometimes splits a name into one word per character; specks of texture also read as single
@@ -157,7 +177,7 @@ def _center_cjk_pairs(words: list[Word], flags: list[bool], size: tuple[int, int
     min_h = 0.015 * size[1]
     singles = [
         w for w, ok in zip(words, flags)
-        if not ok and not _is_border(w.box, size) and len(_CJK_RE.findall(w.text)) == 1
+        if not ok and not _is_border(w.box, size, zones) and len(_CJK_RE.findall(w.text)) == 1
         and w.conf >= CENTRAL_VERIFY_CONF and (w.box[3] - w.box[1]) >= min_h
     ]
     for i, a in enumerate(singles):
@@ -176,7 +196,9 @@ def _center_cjk_pairs(words: list[Word], flags: list[bool], size: tuple[int, int
     return False
 
 
-def _mask(img: Image.Image, words: list[Word], flags: list[bool], skip_center: bool = False) -> int:
+def _mask(
+    img: Image.Image, words: list[Word], flags: list[bool], skip_center: bool = False, zones: list[Rect] | None = None
+) -> int:
     """Black out maskable words. With a hospital template the text bands are already black, so the
     anatomy area is only verified, never masked: masking there makes black-box edges that OCR then reads
     as new "text", which cascaded into false redaction failures on real images."""
@@ -184,9 +206,9 @@ def _mask(img: Image.Image, words: list[Word], flags: list[bool], skip_center: b
     fill = 0 if img.mode in ("L", "1", "I", "F") else (0,) * len(img.getbands())
     n = 0
     for w, ok in zip(words, flags):
-        if not _should_mask(w, ok, img.size):
+        if not _should_mask(w, ok, img.size, zones):
             continue
-        if skip_center and not _is_border(w.box, img.size):
+        if skip_center and not _is_border(w.box, img.size, zones):
             continue
         x0, y0, x1, y1 = w.box
         hgt = max(4, y1 - y0)
@@ -243,6 +265,7 @@ def redact(
         src.load()
     img = src.convert("L") if src.mode not in ("L", "RGB") else src.copy()
 
+    zones = text_zones(template)
     words = ocr_words(img, langs)
     overlay = read_overlay(words)  # plane / SL / ST are read before anything is blacked out
     if template:
@@ -253,13 +276,13 @@ def redact(
     # once its neighbours are masked, so keep OCR-ing and masking until a pass finds nothing new.
     final = words
     for _ in range(MAX_MASK_PASSES):
-        if _mask(img, final, _allowed_flags(final), skip_center=bool(template)) == 0:
+        if _mask(img, final, _allowed_flags(final), skip_center=bool(template), zones=zones) == 0:
             break  # image unchanged since `final` was read: it doubles as the verification pass
         final = ocr_words(img, langs)
     flags = _allowed_flags(final)
-    if any(_is_residual(w, ok, img.size, terms) for w, ok in zip(final, flags)):
+    if any(_is_residual(w, ok, img.size, terms, zones) for w, ok in zip(final, flags)):
         raise RedactionFailed()
-    if _center_cjk_pairs(final, flags, img.size):
+    if _center_cjk_pairs(final, flags, img.size, zones):
         raise RedactionFailed()
     if terms:
         flat = re.sub(r"\s+", "", " ".join(w.text for w in final)).lower()

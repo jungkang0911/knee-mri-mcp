@@ -113,3 +113,23 @@ def test_center_noise_single_cjk_is_not_a_leak():
     assert R._is_residual(word("王小明", 80.0, (200, 300, 245, 314)), False, size, [])
     assert not R._is_residual(word("王小", 70.0, (200, 300, 230, 314)), False, size, [])  # below 75 in the center
     assert R._is_residual(word("王", 60.0, (2, 2, 16, 17)), False, size, [])  # edges stay strict
+
+
+@pytest.mark.parametrize("index", [3, 13])
+def test_template_redaction_leaves_anatomy_untouched(index):
+    """Outside the text zones the masked image must equal the original: no black boxes in the anatomy."""
+    from PIL import ImageChops
+
+    raw = knee_image(index)
+    tpl = [list(r) for r in DEFAULT_TEMPLATES["TSGH"]]
+    masked, _ = R.redact(raw, "eng", [], tpl)
+    reference = Image.open(io.BytesIO(raw)).convert(masked.mode)
+    apply_template(reference, tpl)
+    w, h = masked.size
+    zones = R.text_zones(tpl)
+    diff = ImageChops.difference(masked.convert("L"), reference.convert("L"))
+    changed_outside = sum(
+        1 for y in range(0, h, 2) for x in range(0, w, 2)
+        if diff.getpixel((x, y)) > 0 and not R._is_border((x, y, x + 1, y + 1), (w, h), zones)
+    )
+    assert changed_outside == 0
