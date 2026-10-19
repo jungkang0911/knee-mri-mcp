@@ -108,6 +108,29 @@ class GoogleDriveSource:
         return buf.getvalue()
 
 
+class LazyGoogleDrive:
+    """Loads Google credentials on first use, so the server can start (and report the problem) before
+    Drive is authorized."""
+
+    def __init__(self, root_folder_id: str, client_secrets: Path | None, token_file: Path | None) -> None:
+        self._args = (client_secrets, token_file)
+        self.root = root_folder_id
+        self._inner: GoogleDriveSource | None = None
+        self._lock = threading.Lock()
+
+    def _get(self) -> GoogleDriveSource:
+        with self._lock:
+            if self._inner is None:
+                self._inner = GoogleDriveSource(self.root, load_google_credentials(*self._args))
+            return self._inner
+
+    def list_files(self) -> list[DriveFile]:
+        return self._get().list_files()
+
+    def download(self, file: DriveFile) -> bytes:
+        return self._get().download(file)
+
+
 def load_google_credentials(client_secrets: Path | None, token_file: Path | None):
     """Service account (GOOGLE_SERVICE_ACCOUNT_FILE) or a stored user token from `python -m knee_mcp.google_login`."""
     sa = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
@@ -131,17 +154,26 @@ def load_google_credentials(client_secrets: Path | None, token_file: Path | None
 
 
 class FileCache:
-    """Raw Drive bytes on disk, keyed by fileId + modifiedTime. These files DO contain PII: keep the dir private."""
+    """Raw Drive bytes, keyed by fileId + modifiedTime.
 
-    def __init__(self, root: Path) -> None:
+    By default (keep=False) nothing is written: originals are downloaded into memory, redacted and dropped,
+    so unmasked images never touch the disk. With keep=True (KNEE_KEEP_RAW=1) they are cached under
+    <cache>/drive; those files DO contain PII.
+    """
+
+    def __init__(self, root: Path, keep: bool = False) -> None:
         self.dir = root / "drive"
-        self.dir.mkdir(parents=True, exist_ok=True)
+        self.keep = keep
+        if keep:
+            self.dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
 
     def _key(self, file: DriveFile) -> str:
         return f"{_safe(file.id)}_{_safe(file.modified_time)}"
 
     def get(self, source: DriveSource, file: DriveFile) -> bytes:
+        if not self.keep:
+            return source.download(file)
         path = self.dir / f"{self._key(file)}.bin"
         if path.exists():
             return path.read_bytes()

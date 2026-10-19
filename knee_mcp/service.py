@@ -104,7 +104,7 @@ class KneeService:
     def __init__(self, cfg: Config, source: DriveSource) -> None:
         self.cfg = cfg
         self.catalog = Catalog(source, cfg.study_types, cfg.pii_terms, cfg.listing_ttl)
-        self.proc = Processor(cfg, source, FileCache(cfg.cache_dir))
+        self.proc = Processor(cfg, source, FileCache(cfg.cache_dir, keep=cfg.keep_raw))
         self.pool = ThreadPoolExecutor(max_workers=max(1, cfg.workers))
 
     # ---- lookups -------------------------------------------------------------

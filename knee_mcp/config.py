@@ -34,6 +34,7 @@ class Config:
     listing_ttl: float = 300.0
     max_png_bytes: int = 1_000_000
     workers: int = 4
+    keep_raw: bool = False  # cache unmasked originals on disk (off: download, redact, discard)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -70,4 +71,5 @@ class Config:
             study_types=study_types,
             listing_ttl=float(env.get("KNEE_LISTING_TTL", "300")),
             workers=int(env.get("KNEE_WORKERS", "4")),
+            keep_raw=env.get("KNEE_KEEP_RAW", "0").lower() in ("1", "true", "yes"),
         )

@@ -55,7 +55,7 @@
 
 ## 安裝
 
-部署目標：**使用者自己這台 Windows 11 電腦**（本 repo 所在的機器）。以下指令都在 PowerShell 執行，工作目錄為 `D:\Document\My Dev\knee-mcp`。
+以下是 **Windows 11 本機**的安裝方式（本機測試用；正式部署在 VPS，見「部署在 VPS」一節）。指令都在 PowerShell 執行，工作目錄為 `D:\Document\My Dev\knee-mcp`。
 
 ### 1. Python 3.10+
 
@@ -97,7 +97,8 @@ python -m venv .venv
 | `GOOGLE_CLIENT_SECRETS` | 方案 A | Google OAuth 用戶端 JSON（Desktop app 類型） |
 | `GOOGLE_TOKEN_FILE` | 方案 A | `google_login` 產生的 token 檔，預設 `<cache>/google-token.json` |
 | `GOOGLE_SERVICE_ACCOUNT_FILE` | 方案 B | 服務帳戶金鑰；要把根資料夾以「檢視者」分享給它 |
-| `KNEE_CACHE_DIR` | | 快取目錄，預設 `./.cache`。**`drive/` 子目錄是未遮蔽原圖，含個資**，請放在私人／加密磁碟 |
+| `KNEE_CACHE_DIR` | | 快取目錄，預設 `./.cache`。只存遮蔽後的圖（`redacted/`）與 OAuth 狀態（`auth.json`） |
+| `KNEE_KEEP_RAW` | | 預設 `0`：原圖從 Drive 下載到記憶體、遮蔽完即丟棄，**不寫入硬碟**。設 `1` 才會把未遮蔽原圖快取在 `<cache>/drive/`（含個資） |
 | `KNEE_HOST` / `KNEE_PORT` | | 預設 `127.0.0.1` / `8765`；用 tunnel 時維持 127.0.0.1 |
 | `KNEE_PUBLIC_URL` | 對外時 ✔ | 例如 `https://knee.loanhusband.com`（OAuth issuer 與 resource URL） |
 | `KNEE_ALLOWED_HOSTS` | | 額外允許的 Host header（DNS rebinding 防護）；`KNEE_PUBLIC_URL` 的主機會自動加入 |
@@ -274,6 +275,79 @@ Stop-ScheduledTask -TaskName "knee-mcp"
    tailscale funnel --https=443 off
    ```
 
+## 部署在 VPS（Ubuntu 24.04，目前使用中）
+
+目前正式部署在 VPS，網址 `https://knee.loanhusband.com/mcp`。上面「Windows 本機」的做法保留給本機測試用。
+
+| 項目 | 位置 |
+|---|---|
+| 程式 | `/opt/knee-mcp`（venv 在 `.venv`） |
+| 設定與密鑰 | `/etc/knee-mcp/knee.env`（`root:knee-mcp`，權限 640） |
+| 快取 | `/var/lib/knee-mcp`：只有遮蔽後的圖、`auth.json`、Google token；未遮蔽原圖不落地（`KNEE_KEEP_RAW=0`） |
+| 服務 | systemd `knee-mcp.service`，以系統帳號 `knee-mcp` 執行，只聽 `127.0.0.1:8765`，記憶體上限 700 MB |
+| 對外 | 既有的 Cloudflare Tunnel（`cloudflared-n8n` 服務，設定檔 `/etc/cloudflared/n8n/config.yml`）加一條 `knee.loanhusband.com → http://localhost:8765` |
+| OCR | `apt install tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-tra` |
+
+VPS 只有 1 vCPU、2 GB RAM，所以 `KNEE_WORKERS=1`。第一次開一個 20 張的 contact sheet 可能要 1–2 分鐘，建議授權 Drive 後先跑一次 `--warm`（見下）。
+
+### 給 VPS 授權 Google Drive
+
+**方案 B（服務帳戶，建議）**：照上面「方案 B」建立服務帳戶、把根資料夾分享給它，然後：
+
+```bash
+scp service-account.json ubuntu@165.154.243.84:/tmp/sa.json
+```
+
+```bash
+ssh ubuntu@165.154.243.84 "sudo install -o root -g knee-mcp -m 640 /tmp/sa.json /etc/knee-mcp/service-account.json && rm /tmp/sa.json"
+```
+
+接著編輯 `/etc/knee-mcp/knee.env`：填 `KNEE_ROOT_FOLDER_ID=`，並取消 `GOOGLE_SERVICE_ACCOUNT_FILE=/etc/knee-mcp/service-account.json` 那行的註解。
+
+**方案 A（自己的 Google 帳號）**：在自己電腦跑 `python -m knee_mcp.google_login` 產生 token，再放到 VPS：
+
+```bash
+scp google-token.json ubuntu@165.154.243.84:/tmp/gt.json
+```
+
+```bash
+ssh ubuntu@165.154.243.84 "sudo install -o knee-mcp -g knee-mcp -m 600 /tmp/gt.json /var/lib/knee-mcp/google-token.json && rm /tmp/gt.json"
+```
+
+改完設定後重新啟動，並預先遮蔽全部影像：
+
+```bash
+ssh ubuntu@165.154.243.84 "sudo systemctl restart knee-mcp"
+```
+
+```bash
+ssh ubuntu@165.154.243.84 "sudo -u knee-mcp bash -c 'set -a; . /etc/knee-mcp/knee.env; cd /var/lib/knee-mcp; /opt/knee-mcp/.venv/bin/python -m knee_mcp --warm'"
+```
+
+### 取得擁有者密碼與 Bearer token
+
+兩者是部署時隨機產生的，只存在 `/etc/knee-mcp/knee.env`：
+
+```bash
+ssh ubuntu@165.154.243.84 "sudo grep -E '^KNEE_(OWNER_PASSWORD|BEARER_TOKENS)=' /etc/knee-mcp/knee.env"
+```
+
+要換新的：編輯該檔後執行 `sudo systemctl restart knee-mcp`。
+
+### 更新程式
+
+在本機 repo 目錄：
+
+```bash
+git ls-files -co --exclude-standard | tar -czf - -T - | ssh ubuntu@165.154.243.84 "tar -xzf - -C /opt/knee-mcp && /opt/knee-mcp/.venv/bin/pip install -q /opt/knee-mcp && sudo systemctl restart knee-mcp"
+```
+
+日誌：
+
+```bash
+ssh ubuntu@165.154.243.84 "journalctl -u knee-mcp -n 50 --no-pager"
+```
+
 ## 加入 Claude
 
 ### claude.ai 連接器（自訂連接器）
@@ -331,5 +405,5 @@ npx @modelcontextprotocol/inspector --cli https://knee.loanhusband.com/mcp --tra
 ## 安全備註
 
 - 錯誤訊息只含 study／series／張號等資訊；未預期的例外只回 `internal error (ref xxxx)`，伺服器日誌只記例外類型。
-- `KNEE_CACHE_DIR/drive/` 為未遮蔽原圖、`google-token.json` 與 `auth.json` 為憑證，請確保該目錄只有自己能讀。
+- 原圖只存在 Google Drive；伺服器預設不把未遮蔽原圖寫入硬碟（`KNEE_KEEP_RAW=0`）。`google-token.json`、服務帳戶金鑰與 `auth.json` 是憑證，請確保只有自己能讀。
 - 伺服器只綁 127.0.0.1，並開啟 DNS rebinding 防護（Host / Origin 白名單）。

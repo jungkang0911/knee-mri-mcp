@@ -250,3 +250,13 @@ def test_chinese_name_is_masked():
     big = ImageOps.invert(img.convert("L").resize((1536, 1536)))
     after = pytesseract.image_to_string(big, lang="chi_tra+eng", config="--psm 11")
     assert not any(ch in after for ch in "王小明病歷號") and "20481736" not in after
+
+
+async def test_unmasked_originals_never_written_to_disk(server, cfg):
+    async with Client(server) as c:
+        r = await c.call_tool("get_slice", {"study": "2019-03-20", "series": "7", "index": 3})
+    assert not r.is_error
+    raw_dir = cfg.cache_dir / "drive"
+    assert not raw_dir.exists() or not any(raw_dir.iterdir())
+    leftovers = [p for p in cfg.cache_dir.rglob("*") if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".bin")]
+    assert leftovers == []

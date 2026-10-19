@@ -202,15 +202,14 @@ def main(argv: list[str] | None = None) -> int:
         pytesseract.pytesseract.tesseract_cmd = cfg.tesseract_cmd
     cfg.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    from .drive import GoogleDriveSource, LocalFolderSource, load_google_credentials
+    from .drive import LazyGoogleDrive, LocalFolderSource
 
     local_dir = os.environ.get("KNEE_LOCAL_DIR")
     if local_dir:
         log.warning("serving images from KNEE_LOCAL_DIR instead of Google Drive (development mode)")
         source = LocalFolderSource(Path(local_dir))
     else:
-        creds = load_google_credentials(cfg.google_client_secrets, cfg.google_token_file)
-        source = GoogleDriveSource(cfg.root_folder_id, creds)
+        source = LazyGoogleDrive(cfg.root_folder_id, cfg.google_client_secrets, cfg.google_token_file)
     service = KneeService(cfg, source)
     if args.warm:
         ok, withheld = service.warm()
