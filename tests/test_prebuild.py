@@ -105,6 +105,8 @@ def test_center_noise_single_cjk_is_not_a_leak():
     assert not R._center_cjk_pairs(specks, [False, False], size)
     mixed = [word("骨", 83.0, (181, 145, 186, 147)), word("肉", 80.0, (189, 141, 197, 152))]
     assert not R._center_cjk_pairs(mixed, [False, False], size)
+    same_glyph_twice = [word("肉", 77.0, (189, 141, 196, 152)), word("肉", 80.0, (189, 141, 197, 152))]
+    assert not R._center_cjk_pairs(same_glyph_twice, [False, False], size)
     # A name split into text-sized single characters in a row is still caught.
     name = [word("王", 88.0, (200, 300, 213, 314)), word("小", 90.0, (216, 300, 229, 314)), word("明", 85.0, (232, 300, 245, 314))]
     assert R._center_cjk_pairs(name, [False] * 3, size)

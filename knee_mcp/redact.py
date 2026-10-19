@@ -20,7 +20,7 @@ from PIL import Image, ImageDraw, ImageOps
 from .errors import RedactionFailed
 from .templates import Rect, apply_template
 
-REDACTION_VERSION = "7"
+REDACTION_VERSION = "8"
 MAX_MASK_PASSES = 6
 
 ORIENTATION = {"R", "L", "A", "P", "S", "I"}
@@ -168,6 +168,9 @@ def _center_cjk_pairs(words: list[Word], flags: list[bool], size: tuple[int, int
                 continue
             same_row = abs((a.box[1] + a.box[3]) - (b.box[1] + b.box[3])) / 2 < 0.5 * max(ah, bh)
             gap = max(a.box[0], b.box[0]) - min(a.box[2], b.box[2])
+            narrow = min(a.box[2] - a.box[0], b.box[2] - b.box[0])
+            if gap < -0.5 * narrow:
+                continue  # the same glyph seen by two OCR runs, not two characters
             if same_row and gap < 1.5 * max(ah, bh):
                 return True
     return False
