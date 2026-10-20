@@ -204,8 +204,24 @@ def test_series_vote_and_sl_repair():
     assert vote_plane(["COR PD", "COR PD", "COR T1"]) == "COR PD"
     fixed = repair_sl({1: "84.23", 2: "8023", 3: "76.23", 4: "72.2", 6: "64.23", 7: "6023"})
     assert fixed[2] == "80.23" and fixed[7] == "60.23" and fixed[6] == "64.23"
-    odd = repair_sl({i: f"{32.3 - 4 * (i - 1):.1f}" for i in range(1, 10)} | {5: "8423"})
-    assert odd[5].startswith("~") and odd[1] == "32.3"
+    assert repair_sl({1: "84.23", 2: "80.23", 3: "76.23", 4: ""})[4] == "~72.2"  # unread: from the line
+    # Real 2024 S4 readings: 39.91, 36.61, ..., one misread as "3"
+    s4 = {16: "39.91", 17: "36.61", 18: "33.31", 19: "3", 20: "26.71", 21: "23.41", 22: "20.11"}
+    out = repair_sl(s4)
+    assert out[19] == "~30" and out[16] == "39.91" and out[22] == "20.11"
+    # Axial positions above 400 mm are real, not misreads.
+    ax = repair_sl({i: f"{424.3 - 4 * i:.2f}" for i in range(1, 8)})
+    assert ax[1] == "420.3" and not any(v.startswith("~") for v in ax.values())
+
+
+def test_plane_from_folder_names():
+    from knee_mcp.service import plane_from_folders
+
+    assert plane_from_folders(("2024-12-03_右膝MRI", "冠狀面_T2脂肪抑制FSE")) == "COR T2 FS FSE"
+    assert plane_from_folders(("x", "矢狀面_PD+T2 FSE")) == "SAG PD T2 FSE"
+    assert plane_from_folders(("x", "右膝_橫切面_T2脂肪抑制FSE")) == "Axial T2 FS FSE"
+    assert plane_from_folders(("x", "冠狀面_3D MERGE")) == "COR 3D MERGE"
+    assert plane_from_folders(("x", "序列-010")) == ""
 
 
 def test_cjk_name_split_into_single_characters_is_pii():

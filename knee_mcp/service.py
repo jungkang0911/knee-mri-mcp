@@ -248,33 +248,58 @@ def vote_plane(readings: list[str]) -> str:
     return " ".join(ordered)
 
 
+_FOLDER_WORDS = [
+    ("冠狀", "COR"), ("矢狀", "SAG"), ("橫切", "Axial"), ("軸狀", "Axial"),
+    ("COR", "COR"), ("SAG", "SAG"), ("AX", "Axial"),
+    ("PD", "PD"), ("T1", "T1"), ("T2", "T2"), ("脂肪抑制", "FS"), ("FS", "FS"), ("FSE", "FSE"), ("TSE", "TSE"),
+    ("STIR", "STIR"), ("3D", "3D"), ("MERGE", "MERGE"), ("DESS", "DESS"),
+]
+
+
+def plane_from_folders(folders: tuple[str, ...] | list[str]) -> str:
+    """Series name from a folder such as "冠狀面_T2脂肪抑制FSE" -> "COR T2 FS FSE" ("" if none)."""
+    name = (folders[-1] if folders else "").upper()
+    found: list[tuple[int, str]] = []
+    for word, token in _FOLDER_WORDS:
+        pos = name.find(word.upper())
+        while pos >= 0:
+            # "FS" inside "FSE" is not fat saturation; "AX" must not match inside other words
+            if not (word in ("FS", "AX") and name[pos:pos + 3] in ("FSE", "AXI") and token != "Axial"):
+                found.append((pos, token))
+            pos = name.find(word.upper(), pos + 1)
+    tokens = list(dict.fromkeys(t for _, t in sorted(found)))
+    planes = [t for t in tokens if t in ("COR", "SAG", "Axial")]
+    return " ".join(planes[:1] + [t for t in tokens if t not in ("COR", "SAG", "Axial")]) if tokens else ""
+
+
 def repair_sl(values: dict[int, str]) -> dict[int, str]:
     """Fix OCR'd slice locations within one series.
 
-    Slice locations change linearly with the image number, so a robust line through the readings exposes
-    misreads such as a dropped decimal point ("84.23" -> "8423"). Those are rescaled when that fits the
-    line; values that still do not fit, and missing ones, are filled from the line and marked with "~"."""
+    Slice locations change linearly with the image number. A Theil-Sen line (median of all pairwise
+    slopes) through the readings is robust to the misreads seen on real images ("39.91" -> "3",
+    "84.23" -> "8423"). A reading that fits the line is kept; one that fits after restoring a dropped
+    decimal point is rescaled; anything else, and missing values, is taken from the line and marked "~".
+    Large absolute values are fine (axial positions such as 424.3 mm are real)."""
     nums: dict[int, float] = {}
     for idx, v in values.items():
         try:
             nums[idx] = float(v)
         except (TypeError, ValueError):
             pass
-    plausible = {i: v for i, v in nums.items() if abs(v) < 400}
-    if len(plausible) < 3:
-        return {i: f"{v:g}" for i, v in plausible.items()}
-    pts = sorted(plausible.items())
-    slopes = sorted((b[1] - a[1]) / (b[0] - a[0]) for a, b in zip(pts, pts[1:]) if b[0] != a[0])
+    if len(nums) < 3:
+        return {i: f"{v:g}" for i, v in nums.items()}
+    pts = sorted(nums.items())
+    slopes = sorted((b[1] - a[1]) / (b[0] - a[0]) for i, a in enumerate(pts) for b in pts[i + 1:] if b[0] != a[0])
     slope = slopes[len(slopes) // 2]
     intercept = sorted(v - slope * i for i, v in pts)[len(pts) // 2]
-    tol = max(1.0, abs(slope) * 1.5)
+    tol = max(0.6, abs(slope) * 0.5)
     out: dict[int, str] = {}
     for idx in sorted(set(values) | set(nums)):
         pred = intercept + slope * idx
         v = nums.get(idx)
         fixed = None
         if v is not None:
-            for cand in (v, v / 10, v / 100, v / 1000, -v, -v / 10, -v / 100):
+            for cand in (v, v / 10, v / 100):
                 if abs(cand - pred) <= tol:
                     fixed = cand
                     break
@@ -301,8 +326,16 @@ class KneeService:
     def series_profile(self, se: Series) -> tuple[str, dict[int, str]]:
         """(voted series name, repaired SL per image number) from the prebuilt per-image readings."""
         ovs = {s.index: self.proc.cached_overlay(s.file) for s in se.slices}
-        plane = vote_plane([o.plane for o in ovs.values() if o])
-        sls = repair_sl({i: o.sl for i, o in ovs.items() if o and o.sl})
+        readings = [o.plane for o in ovs.values() if o]
+        plane = vote_plane(readings)
+        folder = plane_from_folders(se.slices[0].file.folders) if se.slices else ""
+        if folder:
+            # The folder name is one reliable reading; it also supplies the plane when the overlay has none.
+            plane = vote_plane(readings + [folder] * max(1, len(readings) // 3)) if readings else folder
+            if not any(t in plane.split() for t in ("COR", "SAG", "Axial")):
+                folder_plane = next((t for t in folder.split() if t in ("COR", "SAG", "Axial")), "")
+                plane = f"{folder_plane} {plane}".strip()
+        sls = repair_sl({i: (o.sl if o else "") for i, o in ovs.items()})  # unread SL filled from the trend
         return plane, sls
 
     def _caption(self, study: Study, series: Series, sl: Slice, ov: Overlay) -> str:

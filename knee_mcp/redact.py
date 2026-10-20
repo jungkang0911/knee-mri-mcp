@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw, ImageOps
 from .errors import RedactionFailed
 from .templates import Rect, apply_template
 
-REDACTION_VERSION = "13"
+REDACTION_VERSION = "14"
 MAX_WORD_H = 0.06  # an OCR "word" taller than this (fraction of image height) is not overlay text
 MAX_WORD_W = 0.60
 MAX_MASK_PASSES = 4
@@ -196,12 +196,13 @@ def read_overlay(words: list[Word]) -> Overlay:
     for ws in lines.values():
         ws.sort(key=lambda w: w.box[0])
         toks = [_norm(w.text) for w in ws]
-        seq = [t for t in toks if t in SEQ_WORDS and t not in {"MRI", "MR", "KNEE"}]
+        parts = [x for t in toks for x in re.split(r"[_/\\]+", t) if x]  # "COR_T2_FS" -> COR T2 FS
+        seq = [t for t in parts if t in SEQ_WORDS and t not in {"MRI", "MR", "KNEE"}]
         if any(t in _PLANE for t in seq) and len(seq) > len(best):
             best = seq
         joined = " ".join(toks)
         for key in ("SL", "ST"):
-            m = re.search(rf"(?:^| ){key}[:=]? ?([+-]?\d{{1,5}}(?:\.\d{{1,2}})?)(?:MM)?(?= |$)", joined)
+            m = re.search(rf"(?:^| ){key}[:=]? ?([+-]?\d{{1,5}}(?:\.\d{{1,2}})?)\.?(?:MM)?(?= |$)", joined)
             if m:
                 if key == "SL" and not sl:
                     sl = m.group(1)
