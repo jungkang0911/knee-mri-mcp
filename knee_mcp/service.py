@@ -520,11 +520,14 @@ class KneeService:
             raise KneeError(f"range has {len(chosen)} images; at most {MAX_SLICES} per call")
         out: list[Rendered] = []
         pending: list[str] = []
-        for sl, (state, val) in zip(chosen, self._gather([s.file for s in chosen])):
+        results = self._gather([s.file for s in chosen])
+        ready = sum(1 for state, _ in results if state == "ok")
+        per_image = self.cfg.max_png_bytes // max(1, ready)  # the whole response shares one size budget
+        for sl, (state, val) in zip(chosen, results):
             label = f"I{sl.index:04d}"
             if state == "ok":
                 img, ov = val  # type: ignore[misc]
-                png = imaging.to_png(imaging.apply_crop(img, crop), self.cfg.max_png_bytes)
+                png = imaging.to_png(imaging.apply_crop(img, crop), per_image)
                 out.append(Rendered(png, self._caption(st, se, sl, ov)))
             elif state == "pending":
                 pending.append(label)

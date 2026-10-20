@@ -291,3 +291,32 @@ async def test_unmasked_originals_never_written_to_disk(server, cfg):
     assert not raw_dir.exists() or not any(raw_dir.iterdir())
     leftovers = [p for p in cfg.cache_dir.rglob("*") if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".bin")]
     assert leftovers == []
+
+
+
+async def test_large_xray_fits_one_mcp_message(tmp_path, drive):
+    """A 2000+ px X-ray must come back under the 1 MiB SSE event limit (base64 included)."""
+    import base64 as b64
+    import random
+
+    big = Image.new("L", (2246, 2496))
+    rnd = random.Random(1)
+    big.putdata([rnd.randrange(256) for _ in range(2246 * 2496)])  # incompressible worst case
+    buf = io.BytesIO()
+    big.save(buf, format="JPEG", quality=95)
+    fid = next(k for k, (f, _) in drive.files.items() if f.name.startswith("2023-04-11_RK_IMG_0001"))
+    drive.files[fid] = (drive.files[fid][0], buf.getvalue())
+    from knee_mcp.config import Config
+    from knee_mcp.server import build_server
+    from knee_mcp.service import KneeService
+
+    cfg = Config(cache_dir=tmp_path / "c", ocr_langs="eng", tool_budget=600, exclude_folders=["匿名化"])
+    server = build_server(cfg, KneeService(cfg, drive))
+    async with Client(server) as c:
+        r = await c.call_tool("get_slice", {"study": "2023-04-11", "series": "1", "index": 1})
+        many = await c.call_tool("get_slices", {"study": "2019-03-20", "series": "7", "start": 1, "end": 8})
+    assert not r.is_error and r.content[0].type == "image"
+    for res in (r, many):
+        total = sum(len(x.data) for x in res.content if x.type == "image")
+        assert total < 1_000_000, total
+    assert len(b64.b64decode(r.content[0].data)) <= 700_000

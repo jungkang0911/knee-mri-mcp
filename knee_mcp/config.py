@@ -32,7 +32,9 @@ class Config:
     pii_terms: list[str] = field(default_factory=list)  # optional exact strings that must never survive
     study_types: dict[str, str] = field(default_factory=dict)  # "2018-12-31" -> "X-ray"
     listing_ttl: float = 300.0
-    max_png_bytes: int = 1_000_000
+    # A whole tool result travels as one SSE event, and MCP clients cap events at 1 MiB; base64 adds 33%,
+    # so all PNGs in one response together stay under this many raw bytes (~930 KB as base64).
+    max_png_bytes: int = 700_000
     workers: int = 4
     exclude_folders: list[str] = field(default_factory=list)  # skip images under folders containing these
     tool_budget: float = 0.0  # seconds a tool may wait for an image that is not prebuilt (0: answer at once)
