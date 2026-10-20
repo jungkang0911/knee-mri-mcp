@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw, ImageOps
 from .errors import RedactionFailed
 from .templates import Rect, apply_template
 
-REDACTION_VERSION = "14"
+REDACTION_VERSION = "15"
 MAX_WORD_H = 0.06  # an OCR "word" taller than this (fraction of image height) is not overlay text
 MAX_WORD_W = 0.60
 MAX_MASK_PASSES = 4
@@ -47,7 +47,10 @@ _PLANE = {
 }
 _STRIP = ":;,=[](){}<>|'\"`*"
 _CJK_RE = re.compile(r"[㐀-鿿豈-﫿]")
-_MONTHS = "JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC"
+_MONTHS = (
+    "JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER"
+    "|JAN|FEB|MAR|APR|JUN|JUL|AUG|SEPT|SEP|OCT|NOV|DEC"
+)
 _PII_PATTERNS = [
     re.compile(r"[A-Z][12]\d{8}"),  # Taiwan national ID
     re.compile(r"(19|20)\d{2}\s?[-/.年]\s?\d{1,2}\s?[-/.月]\s?\d{1,2}"),  # 1975/04/12, 1975年4月12

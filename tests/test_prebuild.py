@@ -99,7 +99,8 @@ def test_template_redaction_removes_pii_and_reads_params_first():
 
 def test_pii_content_rules():
     pii = R.looks_like_pii
-    for t in ("王小明", "20481736", "1975/04/12", "19750412", "12-APR-1975", "A123456789", "1234-5678"):
+    for t in ("王小明", "20481736", "1975/04/12", "19750412", "12-APR-1975", "A123456789", "1234-5678",
+              "29-July-1983", "31-December-2018", "8-March-2023"):
         assert pii(t), t
     for t in ("R", "L", "A", "P", "S", "I", "SL", "-108.21", "4.00", "COR", "PD", "FS", "512", "TR", "3000", "骨"):
         assert not pii(t), t
@@ -230,3 +231,9 @@ def test_cjk_name_split_into_single_characters_is_pii():
     hits = R.pii_words(words)
     assert {h.text for h in hits} == {"王", "小", "明"}
     assert R.pii_words([w("骨", 200)]) == []  # a lone character is not a name
+
+
+def test_studies_without_hospital_code_get_the_xray_band():
+    from knee_mcp.templates import DEFAULT_TEMPLATES
+
+    assert DEFAULT_TEMPLATES[""][0] == (0.0, 0.0, 1.0, 0.13)

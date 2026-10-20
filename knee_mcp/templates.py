@@ -26,6 +26,12 @@ DEFAULT_TEMPLATES: dict[str, list[Rect]] = {
         (0.00, 0.000, 1.00, 0.17),
         (0.00, 0.955, 1.00, 1.00),
     ],
+    # Studies without a hospital code in their names (the 2018 / 2023 X-rays): the hospital, patient name,
+    # chart number, birth date, exam date and physician all sit in the top 0-11%.
+    "": [
+        (0.00, 0.000, 1.00, 0.13),
+        (0.00, 0.955, 1.00, 1.00),
+    ],
 }
 
 
