@@ -310,7 +310,8 @@ async def test_large_xray_fits_one_mcp_message(tmp_path, drive):
     from knee_mcp.server import build_server
     from knee_mcp.service import KneeService
 
-    cfg = Config(cache_dir=tmp_path / "c", ocr_langs="eng", tool_budget=600, exclude_folders=["匿名化"])
+    # Size budget only: masking off keeps this test fast (OCR on 5 Mpx of noise takes many minutes).
+    cfg = Config(cache_dir=tmp_path / "c", ocr_langs="eng", tool_budget=600, exclude_folders=["匿名化"], masking=False)
     server = build_server(cfg, KneeService(cfg, drive))
     async with Client(server) as c:
         r = await c.call_tool("get_slice", {"study": "2023-04-11", "series": "1", "index": 1})

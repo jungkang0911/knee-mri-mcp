@@ -25,8 +25,9 @@ _DATE_RES = [
 ]
 _SERIES_RES = [
     re.compile(r"(?:^|[^A-Za-z])S(?:E|ERIES)?[ _-]?0*(\d{1,3})(?![0-9])", re.IGNORECASE),
-    re.compile(r"序列[ _-]?0*(\d{1,3})(?![0-9])"),
+    re.compile(r"序列[ _-]?0*(\d{1,3})(?![0-9])"),  # 序列-004, 序列-00003 (any number of leading zeros)
 ]
+KEY_IMAGES_SERIES = 99  # a folder of hand-picked images (e.g. 重點影像) becomes series 99
 _HOSP_RE = re.compile(r"(?:^|[_\s-])([A-Z]{3,8})(?=$|[_\s-])")
 _IMAGE_EXT_RE = re.compile(r"\.(jpe?g|png)$", re.IGNORECASE)
 
@@ -123,9 +124,11 @@ def parse_name(name: str, folders: list[str]) -> ParsedName | None:
     if date is None:
         date = _find_date(stem)
     nums = re.findall(r"\d+", stem)
-    if series is None and len(nums) >= 2 and not _find_date(stem):
+    if series is None and len(nums) >= 2 and not _find_date(stem) and re.match(r"(?i)img?[-_]", stem):
         # img-00005-00013 style: first number = series, last = image.
         series = int(nums[-2])
+    if series is None and nums and date is not None:
+        series = KEY_IMAGES_SERIES  # no series anywhere: a picked-images folder; renumbered in build_index
     if not nums or date is None or series is None:
         return None
     return ParsedName(

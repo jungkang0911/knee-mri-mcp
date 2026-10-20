@@ -85,7 +85,8 @@ def _alnum(text: str) -> str:
     return re.sub(r"[^0-9A-Za-z]", "", text)
 
 
-def ocr_words(img: Image.Image, langs: str) -> list[Word]:
+def ocr_words(img: Image.Image, langs: str, fast: bool = False) -> list[Word]:
+    """OCR words with pixel boxes. fast=True runs one pass (inverted, psm 11): enough for plane / SL / ST."""
     import pytesseract
 
     gray = ImageOps.autocontrast(img.convert("L"))
@@ -96,6 +97,8 @@ def ocr_words(img: Image.Image, langs: str) -> list[Word]:
     # Two page-segmentation modes: sparse text (11) finds scattered labels, uniform block (6) finds
     # tightly packed corner text that psm 11 misses (seen on real 2019 overlays: a name at the edge).
     runs = [(ImageOps.invert(big), "--psm 11"), (big, "--psm 11"), (ImageOps.invert(big), "--psm 6"), (big, "--psm 6")]
+    if fast:
+        runs = runs[:1]
     for variant, (im, config) in enumerate(runs):
         data = pytesseract.image_to_data(im, lang=langs, config=config, output_type=pytesseract.Output.DICT)
         for i, raw in enumerate(data["text"]):

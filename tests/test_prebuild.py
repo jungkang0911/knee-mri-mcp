@@ -237,3 +237,36 @@ def test_studies_without_hospital_code_get_the_xray_band():
     from knee_mcp.templates import DEFAULT_TEMPLATES
 
     assert DEFAULT_TEMPLATES[""][0] == (0.0, 0.0, 1.0, 0.13)
+
+
+def test_unconfirmed_folder_becomes_its_own_study():
+    from knee_mcp.catalog import build_index
+    from knee_mcp.drive import DriveFile
+
+    anon = "日期待確認_匿名化MRI（原標記20251126）"
+    files = [DriveFile(f"a{s}{i}", f"image-{i:05d}.jpg", (anon, f"序列-{s:05d}"), "t") for s in range(7) for i in range(2)]
+    files += [
+        DriveFile("k1", "SAG_T2_series-00000_posterior_effusion_fabella_image-00010.jpg", (anon, "重點影像"), "t"),
+        DriveFile("k2", "AX_T1_series-00001_fabella_bone_confirm_image-00010.jpg", (anon, "重點影像"), "t"),
+        DriveFile("c1", "01_2019術前_冠狀面_盤狀外側半月板.png", (anon, "Claude標註圖"), "t"),
+        DriveFile("d1", "2019_S10_I10.jpg", ("2026-09-27_膝部門診影像討論包", "images"), "t"),
+    ]
+    idx = build_index(files, {}, [], ["門診影像討論包", "Claude標註圖"], None, {"匿名化MRI": "2025-11-26_unconfirmed"})
+    assert [st.id for st in idx.studies] == ["2025-11-26_unconfirmed"]
+    st = idx.studies[0]
+    assert st.kind == "MRI" and sorted(st.series) == [0, 1, 2, 3, 4, 5, 6, 99]
+    assert [s.index for s in st.series[99].slices] == [1, 2]  # key images renumbered, same image-00010 no clash
+    assert "excluded 2 files" in idx.issues[-1] and len(idx.issues) == 1
+
+
+async def test_masking_off_serves_unmasked_quickly(tmp_path, drive):
+    cfg = Config(cache_dir=tmp_path / "cache", ocr_langs="eng", workers=2, exclude_folders=["匿名化"], masking=False)
+    svc = KneeService(cfg, drive)
+    svc.prebuild()
+    server = build_server(cfg, svc)
+    async with Client(server) as c:
+        ls = await c.call_tool("list_studies", {})
+        r = await c.call_tool("get_slice", {"study": "2019-03-20", "series": "7", "index": 13})
+    assert "masking is DISABLED" in ls.content[0].text
+    assert r.content[0].type == "image" and "masked boxes 0" in r.content[1].text and "COR PD" in r.content[1].text
+    assert "XIAOMING" in _ocr_all(_png(r.content[0]))  # nothing masked, by design

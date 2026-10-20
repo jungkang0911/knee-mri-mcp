@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from .drive import DriveFile, DriveSource
 from .errors import KneeError, NotFound
 from .dicom import DicomMeta, is_dicom_candidate
-from .naming import ParsedName, folder_hospital, is_image_name, normalize_series, parse_name
+from .naming import KEY_IMAGES_SERIES, ParsedName, folder_hospital, is_image_name, normalize_series, parse_name
 
 _MRI_RE = re.compile(r"(?<![A-Za-z])(MRI|MR)(?![A-Za-z])", re.IGNORECASE)
 _XR_RE = re.compile(r"(?<![A-Za-z])(X-?RAY|XR|CR|DX)(?![A-Za-z])|X光", re.IGNORECASE)
@@ -88,7 +88,10 @@ def build_index(
     pii_terms: list[str],
     exclude: list[str] | None = None,
     dicom_meta: dict[str, DicomMeta | None] | None = None,
+    folder_studies: dict[str, str] | None = None,
 ) -> Index:
+    """folder_studies maps a folder-name fragment to a forced study id ("匿名化MRI" -> "2025-11-26_unconfirmed")
+    for folders whose names cannot be trusted for the date / hospital."""
     issues: list[str] = []
     studies: dict[tuple[str, str], Study] = {}
     folder_text: dict[tuple[str, str], list[str]] = {}
@@ -117,6 +120,11 @@ def build_index(
         if p is None:
             issues.append(f"skipped {label}: cannot determine date/series/image number")
             continue
+        for frag, sid in (folder_studies or {}).items():
+            if any(frag in folder for folder in f.folders):
+                date, _, hosp = sid.partition("_")
+                p = ParsedName(date, hosp, p.series, p.index, True, modality=p.modality)
+                break
         if not p.strict:
             issues.append(f"{label}: {p.note} -> {p.date}_{p.hospital} S{p.series} I{p.index:04d}")
         key = (p.date, p.hospital)
@@ -125,7 +133,7 @@ def build_index(
         if p.modality:
             modality.setdefault(key, p.modality)
         series = study.series.setdefault(p.series, Series(p.series))
-        if any(s.index == p.index for s in series.slices):
+        if p.series != KEY_IMAGES_SERIES and any(s.index == p.index for s in series.slices):
             issues.append(f"{label}: duplicate image I{p.index:04d} in {study.id} S{p.series}; kept the first")
             continue
         series.slices.append(Slice(p.index, f))
@@ -133,6 +141,10 @@ def build_index(
     for key, study in studies.items():
         for s in study.series.values():
             s.slices.sort(key=lambda x: x.index)
+            if s.number == KEY_IMAGES_SERIES:  # picked images: number them 1..n in file-name order
+                s.slices.sort(key=lambda x: x.file.name)
+                for n, sl in enumerate(s.slices, start=1):
+                    sl.index = n
         study.series = dict(sorted(study.series.items()))
         text = " ".join(folder_text.get(key, []))
         study.kind = (
@@ -158,8 +170,10 @@ class Catalog:
         ttl: float,
         exclude: list[str] | None = None,
         dicom_loader: Callable[[list[DriveFile]], dict[str, DicomMeta | None]] | None = None,
+        folder_studies: dict[str, str] | None = None,
     ) -> None:
         self.source = source
+        self.folder_studies = folder_studies or {}
         self.dicom_loader = dicom_loader
         self.exclude = exclude or []
         self.study_types = study_types
@@ -176,7 +190,7 @@ class Catalog:
             metas = None
             if self.dicom_loader:
                 metas = self.dicom_loader([f for f in files if is_dicom_candidate(f)])
-            self._index = build_index(files, self.study_types, self.pii_terms, self.exclude, metas)
+            self._index = build_index(files, self.study_types, self.pii_terms, self.exclude, metas, self.folder_studies)
             self._at = time.monotonic()
             return self._index
 

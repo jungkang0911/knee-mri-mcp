@@ -37,6 +37,8 @@ class Config:
     max_png_bytes: int = 700_000
     workers: int = 4
     exclude_folders: list[str] = field(default_factory=list)  # skip images under folders containing these
+    folder_studies: dict[str, str] = field(default_factory=dict)  # folder fragment -> forced study id
+    masking: bool = True  # KNEE_MASKING=0 serves images unmasked (owner's own data, private use only)
     tool_budget: float = 0.0  # seconds a tool may wait for an image that is not prebuilt (0: answer at once)
     mask_templates: str = ""  # KNEE_MASK_TEMPLATES JSON overriding templates.DEFAULT_TEMPLATES
     keep_raw: bool = False  # cache unmasked originals on disk (off: download, redact, discard)
@@ -79,6 +81,8 @@ class Config:
             listing_ttl=float(env.get("KNEE_LISTING_TTL", "300")),
             workers=int(env.get("KNEE_WORKERS", "4")),
             exclude_folders=_split(env.get("KNEE_EXCLUDE_FOLDERS")),
+            folder_studies=dict(item.split("=", 1) for item in _split(env.get("KNEE_FOLDER_STUDIES")) if "=" in item),
+            masking=env.get("KNEE_MASKING", "1").lower() not in ("0", "false", "no", "off"),
             tool_budget=float(env.get("KNEE_TOOL_BUDGET", "0")),
             mask_templates=env.get("KNEE_MASK_TEMPLATES", ""),
             keep_raw=env.get("KNEE_KEEP_RAW", "0").lower() in ("1", "true", "yes"),

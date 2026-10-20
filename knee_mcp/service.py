@@ -99,7 +99,7 @@ class Processor:
         self.template_for = template_for or (lambda f: None)
         self.dir = cfg.cache_dir / "redacted"
         self.dir.mkdir(parents=True, exist_ok=True)
-        salt = json.dumps([REDACTION_VERSION, cfg.ocr_langs, sorted(cfg.pii_terms)]).encode()
+        salt = json.dumps([REDACTION_VERSION, cfg.ocr_langs, sorted(cfg.pii_terms), cfg.masking]).encode()
         self._salt = hashlib.sha256(salt).hexdigest()[:12]
         self._locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
@@ -214,6 +214,17 @@ class Processor:
                     raise KneeError("cannot decode this DICOM image (unsupported compression or pixel format)") from None
                 tags = _tag_overlay(dicom.read_meta(raw, self.cfg.pii_terms))
             del raw
+            if not self.cfg.masking:
+                # Masking disabled (owner's own data): one quick OCR pass for plane / SL / ST, nothing masked.
+                img = source_img if isinstance(source_img, Image.Image) else Image.open(io.BytesIO(source_img))
+                img.load()
+                ov = _merge(tags, read_overlay(ocr_words(img, self.cfg.ocr_langs, fast=True)))
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                self._write(png, buf.getvalue())
+                self._write(meta, json.dumps({"status": "ok", "overlay": ov.__dict__, "mask_boxes": [],
+                                              "review_boxes": [], "masking": False}).encode())
+                return img, ov
             try:
                 result = redact(source_img, self.cfg.ocr_langs, self.cfg.pii_terms, self.template_for(f))
             except RedactionFailed:
@@ -316,7 +327,8 @@ class KneeService:
         self._inflight: dict[str, Future] = {}
         self._inflight_lock = threading.Lock()
         self.catalog = Catalog(
-            source, cfg.study_types, cfg.pii_terms, cfg.listing_ttl, cfg.exclude_folders, self._load_dicom_metas
+            source, cfg.study_types, cfg.pii_terms, cfg.listing_ttl, cfg.exclude_folders, self._load_dicom_metas,
+            cfg.folder_studies,
         )
         self.templates = load_templates(cfg.mask_templates)
         self._hosp_index: object = None
@@ -382,6 +394,10 @@ class KneeService:
             for s in idx.studies:
                 n = sum(len(x.slices) for x in s.series.values())
                 lines.append(f"{s.id} | {s.date} | {s.hospital or '-'} | {s.kind} | {len(s.series)} | {n}")
+        if not self.cfg.masking:
+            lines.append("")
+            lines.append("NOTE: masking is DISABLED (KNEE_MASKING=0); images are served as stored, including any "
+                         "burned-in patient details")
         if idx.issues:
             lines.append("")
             lines.append(f"issues ({len(idx.issues)}):")

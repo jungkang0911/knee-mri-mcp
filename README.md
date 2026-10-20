@@ -162,7 +162,9 @@ python -m venv .venv
 | `KNEE_OCR_LANGS` | | 預設 `eng`；建議 `eng+chi_tra` 以便偵測中文姓名 |
 | `KNEE_PII_TERMS` | 建議 | 遮完後絕不能出現的字串（逗號分隔） |
 | `KNEE_STUDY_TYPES` | | 例 `2018-12-31=X-ray,2019-03-20=MRI` |
-| `KNEE_EXCLUDE_FOLDERS` | | 逗號分隔；資料夾名稱含其中任一字串就略過（例 `匿名化`） |
+| `KNEE_EXCLUDE_FOLDERS` | | 逗號分隔；資料夾名稱含其中任一字串就略過（例 `門診影像討論包,Claude標註圖`） |
+| `KNEE_FOLDER_STUDIES` | | 強制指定某資料夾的 study_id，例 `匿名化MRI=2025-11-26_unconfirmed`：名稱含「匿名化MRI」的資料夾全部歸到該檢查；`序列-0000N` 子資料夾為序列，沒有序列號的子資料夾（如「重點影像」）成為序列 99，影像依檔名順序編號 |
+| `KNEE_MASKING` | | 預設 `1`。設 `0` 關閉遮罩：影像原樣回傳（含燒在影像上的個資），只做一次快速 OCR 讀切面／SL／ST，prebuild 約快 4 倍。**只適合自己的資料、自己使用**；`list_studies` 會標示 masking is DISABLED |
 | `KNEE_LISTING_TTL` | | Drive 清單快取秒數，預設 300 |
 | `KNEE_WORKERS` | | 平行處理數，預設 4 |
 | `KNEE_TOOL_BUDGET` | | 工具願意等「還沒 prebuild 的影像」幾秒，預設 0：直接回 `not prebuilt yet`，並在背景排入遮蔽 |
