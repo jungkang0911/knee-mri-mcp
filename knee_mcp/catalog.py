@@ -11,7 +11,10 @@ from dataclasses import dataclass, field
 from .drive import DriveFile, DriveSource
 from .errors import KneeError, NotFound
 from .dicom import DicomMeta, is_dicom_candidate
-from .naming import KEY_IMAGES_SERIES, ParsedName, folder_hospital, is_image_name, normalize_series, parse_name
+from .naming import (
+    KEY_IMAGES_SERIES, SIDE_LABEL, ParsedName, folder_hospital, is_image_name, normalize_series, parse_name,
+    side_from_text,
+)
 
 _MRI_RE = re.compile(r"(?<![A-Za-z])(MRI|MR)(?![A-Za-z])", re.IGNORECASE)
 _XR_RE = re.compile(r"(?<![A-Za-z])(X-?RAY|XR|CR|DX)(?![A-Za-z])|X光", re.IGNORECASE)
@@ -41,10 +44,17 @@ class Study:
     hospital: str
     kind: str
     series: dict[int, Series] = field(default_factory=dict)
+    side: str = "right"  # "right" / "left"
 
     @property
     def id(self) -> str:
-        return f"{self.date}_{self.hospital}" if self.hospital else self.date
+        """{date}[_{hospital}] for the right knee (unchanged from before sides existed), plus _LK for the left."""
+        base = f"{self.date}_{self.hospital}" if self.hospital else self.date
+        return f"{base}_LK" if self.side == "left" else base
+
+    @property
+    def side_label(self) -> str:
+        return SIDE_LABEL.get(self.side, self.side)
 
     def get_series(self, value: str | int) -> Series:
         try:
@@ -66,11 +76,11 @@ class Index:
         exact = [s for s in self.studies if s.id.upper() == k]
         if exact:
             return exact[0]
-        by_date = [s for s in self.studies if s.date == k]
+        by_date = [s for s in self.studies if s.date == k or s.id.upper().startswith(k + "_")]
         if len(by_date) == 1:
             return by_date[0]
         if len(by_date) > 1:
-            raise KneeError(f"several studies on {k}; use one of: " + ", ".join(s.id for s in by_date))
+            raise KneeError(f"several studies match {k}; use one of: " + ", ".join(s.id for s in by_date))
         raise NotFound("study not found; call list_studies for valid ids")
 
 
@@ -94,9 +104,9 @@ def build_index(
     """folder_studies maps a folder-name fragment to a forced study id ("匿名化MRI" -> "2025-11-26_unconfirmed")
     for folders whose names cannot be trusted for the date / hospital."""
     issues: list[str] = []
-    studies: dict[tuple[str, str], Study] = {}
-    folder_text: dict[tuple[str, str], list[str]] = {}
-    modality: dict[tuple[str, str], str] = {}
+    studies: dict[tuple[str, str, str], Study] = {}
+    folder_text: dict[tuple[str, str, str], list[str]] = {}
+    modality: dict[tuple[str, str, str], str] = {}
     excluded = 0
     duplicates: dict[str, int] = {}
     # DICOM first, so when the same image exists as DICOM and JPEG the DICOM copy is the one kept.
@@ -120,7 +130,7 @@ def build_index(
             if meta.frames > 1:
                 issues.append(f"{label}: multi-frame DICOM ({meta.frames} frames); only the first frame is shown")
             p = ParsedName(meta.study_date, folder_hospital(f.folders), meta.series, meta.instance, True,
-                           modality=meta.modality)
+                           modality=meta.modality, side=side_from_text(*reversed(f.folders)) or "right")
         else:
             p = parse_name(f.name, list(f.folders))
         if p is None:
@@ -129,12 +139,12 @@ def build_index(
         for frag, sid in (folder_studies or {}).items():
             if any(frag in folder for folder in f.folders):
                 date, _, hosp = sid.partition("_")
-                p = ParsedName(date, hosp, p.series, p.index, True, modality=p.modality)
+                p = ParsedName(date, hosp, p.series, p.index, True, modality=p.modality, side=p.side)
                 break
         if not p.strict:
             issues.append(f"{label}: {p.note} -> {p.date}_{p.hospital} S{p.series} I{p.index:04d}")
-        key = (p.date, p.hospital)
-        study = studies.setdefault(key, Study(p.date, p.hospital, "unknown"))
+        key = (p.date, p.hospital, p.side)
+        study = studies.setdefault(key, Study(p.date, p.hospital, "unknown", side=p.side))
         folder_text.setdefault(key, []).extend(f.folders)
         if p.modality:
             modality.setdefault(key, p.modality)
@@ -164,7 +174,7 @@ def build_index(
     for sid, n in duplicates.items():
         issues.append(f"excluded {n} files that are a duplicate copy of study {sid} (KNEE_DUPLICATE_FOLDERS); "
                       f"they are not a separate exam")
-    ordered = sorted(studies.values(), key=lambda s: (s.date, s.hospital))
+    ordered = sorted(studies.values(), key=lambda s: (s.date, s.hospital, s.side))
     return Index(ordered, issues)
 
 

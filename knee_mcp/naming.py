@@ -41,6 +41,20 @@ class ParsedName:
     strict: bool
     note: str = ""
     modality: str = ""  # "X-ray" / "MRI" / "CT" when the name says so
+    side: str = "right"  # "right" (RK) or "left" (LK)
+
+
+SIDE_LABEL = {"right": "右膝", "left": "左膝"}
+
+
+def side_from_text(*texts: str) -> str | None:
+    for t in texts:
+        up = t.upper()
+        if "左膝" in t or re.search(r"(?<![A-Z])LK(?![A-Z])|LEFT", up):
+            return "left"
+        if "右膝" in t or re.search(r"(?<![A-Z])RK(?![A-Z])|RIGHT", up):
+            return "right"
+    return None
 
 
 def normalize_series(value: str | int) -> int:
@@ -103,6 +117,7 @@ def parse_name(name: str, folders: list[str]) -> ParsedName | None:
             index=int(m["index"]),
             strict=True,
             modality=_MODALITY.get((m["mod"] or "").upper(), ""),
+            side="left" if m["side"].upper() == "LK" else "right",
         )
 
     # Fallback: date / hospital / series from the folders (innermost wins), index from the file name.
@@ -133,9 +148,10 @@ def parse_name(name: str, folders: list[str]) -> ParsedName | None:
         return None
     return ParsedName(
         date=date,
-        hospital=(hosp or "UNKNOWN"),
+        hospital=(hosp or ""),  # unknown hospital: study id is just the date, like a strict name without one
         series=series,
         index=int(nums[-1]),
         strict=False,
         note="name does not follow the naming rule; date/hospital/series inferred from folder names",
+        side=side_from_text(stem, *reversed(folders)) or "right",
     )

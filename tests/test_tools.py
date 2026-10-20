@@ -86,8 +86,8 @@ async def test_compare_side_by_side(server):
     assert not r.is_error, r.content
     img = _png(r.content[0])
     assert img.width > img.height
-    assert "2019-03-20 TSGH S7 I0010" in r.content[1].text
-    assert "2024-12-03 VGHTPE S4 I0002" in r.content[1].text
+    assert "2019-03-20 TSGH 右膝 S7 I0010" in r.content[1].text
+    assert "2024-12-03 VGHTPE 右膝 S4 I0002" in r.content[1].text
     assert "  " not in r.content[1].text
 
 
@@ -187,10 +187,11 @@ async def test_list_studies_and_issues(server):
     async with Client(server) as c:
         r = await c.call_tool("list_studies", {})
     text = r.content[0].text
-    assert "2018-12-31 | 2018-12-31 | - | X-ray | 1 | 2" in text
-    assert "2019-03-20_TSGH | 2019-03-20 | TSGH | MRI | 1 | 20" in text
-    assert "2023-04-11 | 2023-04-11 | - | unknown | 1 | 3" in text
-    assert "2024-12-03_VGHTPE | 2024-12-03 | VGHTPE | MRI | 2 | 6" in text
+    assert "2018-12-31 | 2018-12-31 | - | 右膝 | X-ray | 1 | 2" in text
+    assert "2019-03-20_TSGH | 2019-03-20 | TSGH | 右膝 | MRI | 1 | 20" in text
+    assert "2022-06-07_TSGH_LK | 2022-06-07 | TSGH | 左膝 | MRI | 2 | 6" in text
+    assert "2023-04-11 | 2023-04-11 | - | 右膝 | unknown | 1 | 3" in text
+    assert "2024-12-03_VGHTPE | 2024-12-03 | VGHTPE | 右膝 | MRI | 2 | 6" in text
     assert "2025-11-26" not in text  # anonymized 2019 copy is excluded, not a new study
     assert "excluded 2 files" in text
 

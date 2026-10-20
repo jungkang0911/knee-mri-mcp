@@ -52,6 +52,11 @@ class MockDrive:
             add(f"2023-04-11_RK_IMG_{i:04d}.jpg", ("2023-04-11",), knee_image(300 + i, plane="", pii=False))
         for i in range(1, 3):
             add(f"img-00004-{i:05d}.jpg", ("日期待確認_匿名化MRI（原標記20251126）", "序列-004"), knee_image(400 + i))
+        # 2022 LEFT knee MRI: no burned-in text at all (plane / ST come from overrides.json), 3-digit 序列 folders.
+        for ser in (8, 9):
+            for i in range(1, 4):
+                add(f"2022-06-07_TSGH_LK_S{ser}_I{i:04d}.jpg", ("2022-06-07_左膝MRI（無顯影劑）", f"序列-{ser:03d}"),
+                    knee_image(500 + 10 * ser + i, plane="", sl="", st="", pii=False))
         add("notes.txt", (), b"not an image")
         self._order = list(self.files)
         random.Random(7).shuffle(self._order)

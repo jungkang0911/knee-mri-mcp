@@ -31,10 +31,10 @@ def prebuilt(tmp_path, drive):
 def test_manifest_fields_and_incremental(prebuilt, drive):
     cfg, svc, manifest, msgs = prebuilt
     data = json.loads((cfg.cache_dir / "manifest.json").read_text("utf-8"))
-    assert data == manifest and len(data) == 20 + 6 + 2 + 3
+    assert data == manifest and len(data) == 20 + 6 + 2 + 3 + 6
     e = next(x for x in data if x["study"] == "2019-03-20_TSGH" and x["index"] == 13)
     assert set(e) == {"study", "series", "index", "plane", "sl", "st", "size", "fileId", "modifiedTime",
-                      "masked_path", "redaction_status", "mask_boxes", "review_boxes"}
+                      "masked_path", "redaction_status", "mask_boxes", "review_boxes", "side"}
     assert e["series"] == 7 and e["plane"] == "COR PD" and e["sl"] == "9" and e["st"] == "3.0"
     assert e["size"] == [512, 512] and e["redaction_status"] == "ok" and e["masked_path"].startswith("redacted/")
     assert (cfg.cache_dir / e["masked_path"]).exists()

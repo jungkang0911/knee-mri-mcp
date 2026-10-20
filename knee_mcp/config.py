@@ -43,6 +43,7 @@ class Config:
     tool_budget: float = 0.0  # seconds a tool may wait for an image that is not prebuilt (0: answer at once)
     mask_templates: str = ""  # KNEE_MASK_TEMPLATES JSON overriding templates.DEFAULT_TEMPLATES
     keep_raw: bool = False  # cache unmasked originals on disk (off: download, redact, discard)
+    overrides_path: Path | None = None  # KNEE_OVERRIDES: per-study/series overrides (plane, ST, no_text ...)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -88,4 +89,5 @@ class Config:
             tool_budget=float(env.get("KNEE_TOOL_BUDGET", "0")),
             mask_templates=env.get("KNEE_MASK_TEMPLATES", ""),
             keep_raw=env.get("KNEE_KEEP_RAW", "0").lower() in ("1", "true", "yes"),
+            overrides_path=Path(env["KNEE_OVERRIDES"]) if env.get("KNEE_OVERRIDES") else cache_dir / "overrides.json",
         )

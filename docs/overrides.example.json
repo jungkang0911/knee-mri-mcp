@@ -1,0 +1,42 @@
+{
+  "studies": {
+    "2022-06-07_TSGH_LK": {
+      "no_text": true,
+      "series": {
+        "3": {
+          "plane": "Axial T2 FS",
+          "st": "5"
+        },
+        "4": {
+          "plane": "Axial T1",
+          "st": "5"
+        },
+        "5": {
+          "plane": "Coronal T1",
+          "st": "4",
+          "spacing": 5.3
+        },
+        "6": {
+          "plane": "Coronal PD",
+          "st": "4",
+          "spacing": 5.3
+        },
+        "7": {
+          "plane": "Coronal PD FS",
+          "st": "4",
+          "spacing": 5.3
+        },
+        "8": {
+          "plane": "Sagittal PD",
+          "st": "4",
+          "spacing": 5.3
+        },
+        "9": {
+          "plane": "Sagittal PD FS",
+          "st": "4",
+          "spacing": 5.3
+        }
+      }
+    }
+  }
+}

@@ -93,8 +93,8 @@ async def test_list_studies_from_tags_without_full_downloads(dcm_server, dcm_dri
     async with Client(dcm_server) as c:
         r = await c.call_tool("list_studies", {})
     text = r.content[0].text
-    assert "2019-03-20_TSGH | 2019-03-20 | TSGH | MRI | 1 | 6" in text
-    assert "2024-12-03_VGHTPE | 2024-12-03 | VGHTPE | MRI | 1 | 1" in text
+    assert "2019-03-20_TSGH | 2019-03-20 | TSGH | 右膝 | MRI | 1 | 6" in text
+    assert "2024-12-03_VGHTPE | 2024-12-03 | VGHTPE | 右膝 | MRI | 1 | 1" in text
     assert "skipped README: not a readable DICOM file" in text
     assert "DICOMDIR" not in text
     assert dcm_drive.downloads == 0 and dcm_drive.head_reads == 8  # headers only, via HTTP Range

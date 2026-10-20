@@ -134,10 +134,12 @@ def build_server(cfg: Config, service: KneeService, provider: OwnerAuthProvider 
 
         return await _run(go)
 
-    @mcp.tool(description="Two images side by side (e.g. 2019 vs 2024), each labelled with date and image number.")
-    async def compare(a: SliceRef, b: SliceRef) -> CallToolResult:
+    @mcp.tool(description="Two images side by side (e.g. 2019 vs 2024, or left vs right knee), each labelled with "
+                          "date, side and image number. mirror=true flips the second image left-right so a left and "
+                          "a right knee share the same medial/lateral orientation.")
+    async def compare(a: SliceRef, b: SliceRef, mirror: bool = False) -> CallToolResult:
         def go():
-            r = service.compare(a.model_dump(), b.model_dump())
+            r = service.compare(a.model_dump(), b.model_dump(), mirror)
             return CallToolResult(content=[_img(r), TextContent(text=r.caption)])
 
         return await _run(go)

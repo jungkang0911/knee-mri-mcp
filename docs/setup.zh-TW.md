@@ -22,6 +22,7 @@
 
 - `study` 可以用 `list_studies` 的 study_id（`2019-03-20_TSGH`），或只給日期（`2019-03-20`，當天只有一個檢查時）。
 - `series` 接受 `7`、`"7"`、`"S7"`、`"S07"`，**S4 和 S04 視為同一序列**。
+- **左右膝：** 檔名裡的 `RK` 是右膝、`LK` 是左膝。右膝的 study_id 不變（`2019-03-20_TSGH`），左膝加 `_LK`（`2022-06-07_TSGH_LK`）。`list_studies` 有「side」欄，所有說明文字都標「右膝」或「左膝」。`compare` 比較左右膝時會提醒內外側方向相反，加 `mirror: true` 會把第二張左右翻轉。
 - `crop` 為 `[x0, y0, x1, y1]`，以原圖像素計算（原圖尺寸見 `get_slice` 文字裡的 `size`）；`zoom` 範圍 0.25–4。
 
 ## 檔名規則
@@ -167,6 +168,7 @@ python -m venv .venv
 | `KNEE_EXCLUDE_FOLDERS` | | 逗號分隔；資料夾名稱含其中任一字串就略過（例 `門診影像討論包,Claude標註圖`） |
 | `KNEE_FOLDER_STUDIES` | | 強制指定某資料夾的 study_id，例 `匿名化MRI=2025-11-26_unconfirmed`：名稱含「匿名化MRI」的資料夾全部歸到該檢查；`序列-0000N` 子資料夾為序列，沒有序列號的子資料夾（如「重點影像」）成為序列 99，影像依檔名順序編號 |
 | `KNEE_DUPLICATE_FOLDERS` | | 例 `匿名化MRI=2019-03-20_TSGH`：該資料夾是某次檢查的重複副本，整個排除，並在 `list_studies` 的 issues 註明「duplicate copy of study …」，避免被當成另一次檢查 |
+| `KNEE_OVERRIDES` | | 覆寫檔路徑，預設 `<cache>/overrides.json`。給影像上沒有文字的序列指定切面、切片厚度、間距，並用 `no_text` 跳過 OCR 與遮罩；格式見 `docs/overrides.example.json` |
 | `KNEE_MASKING` | | 預設 `1`。設 `0` 關閉遮罩：影像原樣回傳（含燒在影像上的個資），只做一次快速 OCR 讀切面／SL／ST，prebuild 約快 4 倍。**只適合自己的資料、自己使用**；`list_studies` 會標示 masking is DISABLED |
 | `KNEE_LISTING_TTL` | | Drive 清單快取秒數，預設 300 |
 | `KNEE_WORKERS` | | 平行處理數，預設 4 |

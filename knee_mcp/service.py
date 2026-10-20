@@ -13,7 +13,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from . import dicom, imaging
 from .catalog import Catalog, Series, Slice, Study
@@ -91,12 +91,14 @@ class Processor:
         files: FileCache,
         metas: DicomMetaStore,
         template_for: Callable[[DriveFile], list | None] | None = None,
+        no_text_for: Callable[[DriveFile], bool] | None = None,
     ) -> None:
         self.cfg = cfg
         self.source = source
         self.files = files
         self.metas = metas
         self.template_for = template_for or (lambda f: None)
+        self.no_text_for = no_text_for or (lambda f: False)  # series known to carry no burned-in text
         self.dir = cfg.cache_dir / "redacted"
         self.dir.mkdir(parents=True, exist_ok=True)
         salt = json.dumps([REDACTION_VERSION, cfg.ocr_langs, sorted(cfg.pii_terms), cfg.masking]).encode()
@@ -105,7 +107,7 @@ class Processor:
         self._guard = threading.Lock()
 
     def _key(self, f: DriveFile) -> str:
-        template = json.dumps(self.template_for(f))
+        template = json.dumps(self.template_for(f)) + ("|notext" if self.no_text_for(f) else "")
         return hashlib.sha256(f"{f.id}|{f.modified_time}|{self._salt}|{template}".encode()).hexdigest()[:32]
 
     def png_path(self, f: DriveFile) -> Path:
@@ -214,11 +216,12 @@ class Processor:
                     raise KneeError("cannot decode this DICOM image (unsupported compression or pixel format)") from None
                 tags = _tag_overlay(dicom.read_meta(raw, self.cfg.pii_terms))
             del raw
-            if not self.cfg.masking:
+            if self.no_text_for(f) or not self.cfg.masking:
                 # Masking disabled (owner's own data): one quick OCR pass for plane / SL / ST, nothing masked.
                 img = source_img if isinstance(source_img, Image.Image) else Image.open(io.BytesIO(source_img))
                 img.load()
-                ov = _merge(tags, read_overlay(ocr_words(img, self.cfg.ocr_langs, fast=True)))
+                ocr = Overlay("", "", "") if self.no_text_for(f) else read_overlay(ocr_words(img, self.cfg.ocr_langs, fast=True))
+                ov = _merge(tags, ocr)
                 buf = io.BytesIO()
                 img.save(buf, format="PNG")
                 self._write(png, buf.getvalue())
@@ -333,11 +336,35 @@ class KneeService:
         self.templates = load_templates(cfg.mask_templates)
         self._hosp_index: object = None
         self._hosp_by_id: dict[str, str] = {}
-        self.proc = Processor(cfg, source, files, self.metas, self._template_for)
+        self._study_by_id: dict[str, Study] = {}
+        self.proc = Processor(cfg, source, files, self.metas, self._template_for, self._no_text_for)
+        self.overrides = load_overrides(cfg.overrides_path)
 
-    def series_profile(self, se: Series) -> tuple[str, dict[int, str]]:
-        """(voted series name, repaired SL per image number) from the prebuilt per-image readings."""
+    def _study_of(self, f: DriveFile) -> Study | None:
+        idx = self.catalog.index()
+        if idx is not self._hosp_index:
+            self._hosp_by_id = {s.file.id: st.hospital for st in idx.studies for se in st.series.values() for s in se.slices}
+            self._study_by_id = {s.file.id: st for st in idx.studies for se in st.series.values() for s in se.slices}
+            self._hosp_index = idx
+        return self._study_by_id.get(f.id)
+
+    def _no_text_for(self, f: DriveFile) -> bool:
+        st = self._study_of(f)
+        return bool(st and self.overrides.get("studies", {}).get(st.id, {}).get("no_text"))
+
+    def series_override(self, study: Study, se: Series) -> dict:
+        return self.overrides.get("studies", {}).get(study.id, {}).get("series", {}).get(str(se.number), {})
+
+    def series_profile(self, se: Series, study: Study | None = None) -> tuple[str, dict[int, str]]:
+        """(series name, repaired SL per image number): from overrides.json when present, else voted from the
+        prebuilt per-image OCR readings."""
+        if study is None and se.slices:
+            study = self._study_of(se.slices[0].file)
+        ovr = self.series_override(study, se) if study else {}
         ovs = {s.index: self.proc.cached_overlay(s.file) for s in se.slices}
+        if ovr.get("plane"):
+            sls = repair_sl({i: (o.sl if o else "") for i, o in ovs.items()}) if any(o and o.sl for o in ovs.values()) else {}
+            return str(ovr["plane"]), sls
         readings = [o.plane for o in ovs.values() if o]
         plane = vote_plane(readings)
         folder = plane_from_folders(se.slices[0].file.folders) if se.slices else ""
@@ -351,20 +378,23 @@ class KneeService:
         return plane, sls
 
     def _caption(self, study: Study, series: Series, sl: Slice, ov: Overlay) -> str:
-        plane, sls = self.series_profile(series)
+        plane, sls = self.series_profile(series, study)
+        ovr = self.series_override(study, series)
         boxes = len(self.proc.info(sl.file).get("mask_boxes", []))
-        parts = [f"{study.id} S{series.number} I{sl.index:04d}", plane or ov.plane or "plane ?"]
+        parts = [f"{study.id} S{series.number} I{sl.index:04d}", f"{study.side_label} {plane or ov.plane or 'plane ?'}"]
         parts.append(f"SL {sls[sl.index]}" if sl.index in sls else "SL ?")
-        parts.append(f"ST {ov.st}" if ov.st else "ST ?")
+        st = str(ovr.get("st") or ov.st or "")
+        if ovr.get("spacing"):
+            st = f"{st or '?'} mm, spacing {ovr['spacing']} mm"
+        parts.append(f"ST {st}" if st else "ST ?")
         parts.append(f"masked boxes {boxes}")
         return " | ".join(parts)
 
     def _template_for(self, f: DriveFile) -> list | None:
         """Mask template of the hospital the file's study belongs to (None: OCR-only masking)."""
-        idx = self.catalog.index()
-        if idx is not self._hosp_index:
-            self._hosp_by_id = {s.file.id: st.hospital for st in idx.studies for se in st.series.values() for s in se.slices}
-            self._hosp_index = idx
+        if self._no_text_for(f):
+            return None
+        self._study_of(f)
         rects = self.templates.get(self._hosp_by_id.get(f.id, ""))
         return [list(r) for r in rects] if rects else None
 
@@ -390,10 +420,10 @@ class KneeService:
         if not idx.studies:
             lines = ["No studies found under the configured Drive folder."]
         else:
-            lines = ["study_id | date | hospital | type | series | images"]
+            lines = ["study_id | date | hospital | side | type | series | images"]
             for s in idx.studies:
                 n = sum(len(x.slices) for x in s.series.values())
-                lines.append(f"{s.id} | {s.date} | {s.hospital or '-'} | {s.kind} | {len(s.series)} | {n}")
+                lines.append(f"{s.id} | {s.date} | {s.hospital or '-'} | {s.side_label} | {s.kind} | {len(s.series)} | {n}")
         if not self.cfg.masking:
             lines.append("")
             lines.append("NOTE: masking is DISABLED (KNEE_MASKING=0); images are served as stored, including any "
@@ -409,13 +439,13 @@ class KneeService:
     def list_series(self, study: str) -> str:
         """Summarized from prebuilt results only: no download, no OCR at request time."""
         st = self.catalog.index().get_study(study)
-        lines = [f"{st.id} ({st.kind})", "series | images | I range | plane (voted) | SL range | prebuilt | review"]
+        lines = [f"{st.id} ({st.side_label}, {st.kind})", "series | images | I range | plane | SL range | prebuilt | review"]
         todo_total = 0
         for se in st.series.values():
             statuses = [self.proc.status(s.file) for s in se.slices]
             done = sum(1 for x in statuses if x != "todo")
             todo_total += len(se.slices) - done
-            plane, sls = self.series_profile(se)
+            plane, sls = self.series_profile(se, st)
             vals = [float(v) for v in sls.values() if not v.startswith("~")]
             sl_range = f"{min(vals):g} .. {max(vals):g}" if len(vals) >= 2 else (f"{vals[0]:g}" if vals else "?")
             lines.append(
@@ -500,7 +530,9 @@ class KneeService:
             img = val[0] if state == "ok" else imaging.PENDING if state == "pending" else None  # type: ignore[index]
             tiles.append((f"I{s.index:04d}", img))
         sheet = imaging.contact_sheet(tiles, cols)
-        caption = f"{st.id} S{se.number}: {len(tiles)} images, I{se.slices[0].index:04d}-I{se.slices[-1].index:04d}"
+        plane, _ = self.series_profile(se, st)
+        caption = (f"{st.id} S{se.number} ({st.side_label}{' ' + plane if plane else ''}): {len(tiles)} images, "
+                   f"I{se.slices[0].index:04d}-I{se.slices[-1].index:04d}")
         withheld = sum(1 for state, _ in results if state in ("withheld", "error"))
         pending = sum(1 for state, _ in results if state == "pending")
         if withheld:
@@ -556,7 +588,9 @@ class KneeService:
                                      "call get_slices again for these in a few minutes"))
         return out
 
-    def compare(self, a: dict, b: dict) -> Rendered:
+    def compare(self, a: dict, b: dict, mirror: bool = False) -> Rendered:
+        """Side by side. mirror=True flips the second image left-right so a left and a right knee share the
+        same medial / lateral orientation."""
         refs = []
         for ref in (a, b):
             st, se = self._resolve(ref["study"], ref["series"])
@@ -572,10 +606,20 @@ class KneeService:
             if state == "error":
                 raise KneeError(str(val))
             img, ov = val  # type: ignore[misc]
+            plane, _ = self.series_profile(se, st)
             imgs.append(imaging.apply_crop(img, crop))
-            labels.append(" ".join(x for x in (st.date, st.hospital, f"S{se.number}", f"I{sl.index:04d}", ov.plane) if x))
+            labels.append(" ".join(x for x in (st.date, st.hospital, st.side_label, f"S{se.number}", f"I{sl.index:04d}",
+                                               plane or ov.plane) if x))
+        if mirror:
+            imgs[1] = ImageOps.mirror(imgs[1])
+            labels[1] += " (mirrored)"
         out = imaging.side_by_side(imgs[0], labels[0], imgs[1], labels[1])
-        return Rendered(imaging.to_png(out, self.cfg.max_png_bytes), f"left: {labels[0]} | right: {labels[1]}")
+        caption = f"left: {labels[0]} | right: {labels[1]}"
+        if refs[0][0].side != refs[1][0].side:
+            caption += (" | NOTE: different knees (left vs right): medial and lateral are on opposite sides"
+                        + ("; the second image is mirrored so both share the same orientation" if mirror
+                           else "; pass mirror=true to flip one so both share the same orientation"))
+        return Rendered(imaging.to_png(out, self.cfg.max_png_bytes), caption)
 
     def warm(self) -> tuple[int, int]:
         """Back-compat for `--warm`: prebuild everything. Returns (ok, withheld)."""
@@ -593,6 +637,7 @@ class KneeService:
         Incremental: images whose fileId + modifiedTime (and mask settings) were already processed are
         skipped. Downloads run in parallel; OCR uses cfg.workers threads."""
         say = progress or (lambda msg: None)
+        self.overrides = load_overrides(self.cfg.overrides_path)
         idx = self.catalog.index(refresh=True)
         items = [(st, se, sl) for st in idx.studies for se in st.series.values() for sl in se.slices]
         todo = [it for it in items if self.proc.status(it[2].file) == "todo"]
@@ -625,7 +670,7 @@ class KneeService:
         profiles = {}
         for st, se, sl in items:
             if id(se) not in profiles:
-                profiles[id(se)] = self.series_profile(se)
+                profiles[id(se)] = self.series_profile(se, st)
             plane, sls = profiles[id(se)]
             status = self.proc.status(sl.file)
             info = self.proc.info(sl.file)
@@ -637,7 +682,7 @@ class KneeService:
                     if debug_dir is not None:
                         _debug_overlay(im, info, debug_dir / f"{st.id}_S{se.number}_I{sl.index:04d}.png")
             manifest.append({
-                "study": st.id, "series": se.number, "index": sl.index,
+                "study": st.id, "side": st.side, "series": se.number, "index": sl.index,
                 "plane": plane or (ov.plane if ov else ""), "sl": sls.get(sl.index, ""), "st": ov.st if ov else "",
                 "size": size, "fileId": sl.file.id, "modifiedTime": sl.file.modified_time,
                 "masked_path": f"redacted/{self.proc.png_path(sl.file).name}" if status in ("ok", "review") else None,
@@ -665,3 +710,19 @@ def _debug_overlay(masked: Image.Image, info: dict, path: Path) -> None:
     for b in info.get("review_boxes", []):
         draw.rectangle((b[0] - 2, b[1] - 2, b[2] + 1, b[3] + 1), outline=(255, 220, 0), width=2)
     img.save(path)
+
+
+def load_overrides(path: Path | None) -> dict:
+    """overrides.json: per-study and per-series facts that cannot be read from the images.
+
+    {"studies": {"2022-06-07_TSGH_LK": {"no_text": true,
+        "series": {"8": {"plane": "Sagittal PD", "st": "4", "spacing": 5.3}}}}}
+    no_text: the images carry no burned-in text, so they are stored as-is without OCR or masking.
+    plane / st / spacing: used in list_series and captions instead of OCR readings."""
+    if not path or not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError) as e:
+        raise KneeError(f"overrides file could not be read: {type(e).__name__}") from None
+    return data if isinstance(data, dict) else {}
