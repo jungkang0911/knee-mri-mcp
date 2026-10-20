@@ -26,6 +26,22 @@
 - 圖片是真正的 MCP `ImageContent`（PNG），不會把 base64 當文字回傳；每次回應都控制在 MCP 單則訊息 1 MiB 以內。
 - 支援 **claude.ai** 自訂連接器、**ChatGPT** 開發人員模式連接器（兩者都走 OAuth）、**Claude Code** 和 **MCP Inspector**（Bearer token）。
 
+## 實際畫面
+
+以下都是作者本人的膝蓋影像，經 knee-mcp 遮蔽後公開，已獲本人同意。
+
+**`compare`**：2019 年術前 MRI 和 2024 年追蹤，同一切面左右並排：
+
+![2019 與 2024 矢狀面比較](docs/images/compare-2019-2024.png)
+
+**`get_contact_sheet`**：2024 年 MRI 冠狀面的相鄰切片，每格標張號，AI 可以再點名要哪一張：
+
+![2024 冠狀面縮圖總覽](docs/images/contact-sheet-2024-cor.png)
+
+**遮蔽**：一張 2019 年影像實際回傳的樣子，紅框是塗黑的區域（`prebuild --debug-overlays`）。上方文字帶原本是姓名、病歷號、生日；左下的技術參數保留可見：
+
+![遮蔽示意](docs/images/masking-overlay.png)
+
 ## 運作方式
 
 ```

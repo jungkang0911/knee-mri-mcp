@@ -34,6 +34,23 @@ It was built for one real case (see [the case study](docs/case-study.zh-TW.md)):
 - Works with **claude.ai** custom connectors, **ChatGPT** developer-mode connectors (both via OAuth), **Claude Code**
   and the **MCP Inspector** (bearer token).
 
+## Screenshots
+
+All images below are the author's own knee, masked by knee-mcp and shared with consent.
+
+**`compare`** — the 2019 pre-op MRI next to the 2024 follow-up, same plane:
+
+![2019 vs 2024 sagittal](docs/images/compare-2019-2024.png)
+
+**`get_contact_sheet`** — neighbouring coronal slices of the 2024 MRI, numbered so the AI can ask for any of them:
+
+![2024 coronal contact sheet](docs/images/contact-sheet-2024-cor.png)
+
+**Masking** — a full 2019 frame as returned, with the blacked-out areas outlined in red (`prebuild --debug-overlays`).
+The top band held the name, chart number and birth date; the technical parameters at the lower left stay visible:
+
+![masking overlay](docs/images/masking-overlay.png)
+
 ## How it works
 
 ```
