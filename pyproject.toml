@@ -3,6 +3,8 @@ name = "knee-mcp"
 version = "0.1.0"
 description = "Remote MCP server for knee MRI / X-ray images in Google Drive, with burned-in PII masking"
 requires-python = ">=3.10"
+readme = "README.md"
+license = {text = "MIT"}
 dependencies = [
   "mcp>=2.3,<3",
   "pillow>=10.1",
