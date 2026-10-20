@@ -20,7 +20,7 @@ from .catalog import Catalog, Series, Slice, Study
 from .config import Config
 from .dicom import DicomMeta, is_dicom_bytes, is_dicom_candidate
 from .drive import DriveFile, DriveSource, FileCache
-from .errors import KneeError, RedactionFailed
+from .errors import KneeError, NeedsReview, RedactionFailed
 from .templates import load_templates
 from .redact import REDACTION_VERSION, Overlay, ocr_words, read_overlay, redact
 
@@ -111,15 +111,46 @@ class Processor:
     def png_path(self, f: DriveFile) -> Path:
         return self.dir / f"{self._key(f)}.png"
 
-    def status(self, f: DriveFile) -> str:
-        """"ok" / "failed" (withheld) / "todo" (not prebuilt yet)."""
+    def info(self, f: DriveFile) -> dict:
+        """The stored result for this image ({} when not prebuilt): status, overlay, mask_boxes, review_boxes."""
         meta = self.dir / f"{self._key(f)}.json"
-        if not meta.exists():
+        return json.loads(meta.read_text("utf-8")) if meta.exists() else {}
+
+    def _approved(self) -> dict[str, str]:
+        path = self.cfg.cache_dir / "review_decisions.json"
+        return json.loads(path.read_text("utf-8")) if path.exists() else {}
+
+    def decide_review(self, f: DriveFile, decision: str) -> None:
+        """Owner decision for a "review" image: "approve" shows it as is, "mask" blacks out the flagged boxes."""
+        if decision not in ("approve", "mask"):
+            raise KneeError("decision must be approve or mask")
+        key = self._key(f)
+        with self._lock(key):
+            info = self.info(f)
+            if info.get("status") != "review":
+                raise KneeError("this image is not waiting for review")
+            if decision == "mask":
+                with Image.open(self.png_path(f)) as im:
+                    im.load()
+                    img = im.copy()
+                boxes = [list(b) for b in info.get("review_boxes", [])]
+                from .redact import _blackout
+
+                _blackout(img, boxes)
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                self._write(self.png_path(f), buf.getvalue())
+                info["mask_boxes"] = info.get("mask_boxes", []) + boxes
+            info["status"] = "ok"
+            info["review_decision"] = decision
+            self._write(self.dir / f"{key}.json", json.dumps(info).encode())
+
+    def status(self, f: DriveFile) -> str:
+        """"ok" / "failed" (withheld) / "review" (waiting for the owner) / "todo" (not prebuilt yet)."""
+        st = self.info(f).get("status")
+        if st in ("ok", "review") and not self.png_path(f).exists():
             return "todo"
-        st = json.loads(meta.read_text("utf-8")).get("status")
-        if st == "ok" and self.png_path(f).exists():
-            return "ok"
-        return "failed" if st == "failed" else "todo"
+        return st if st in ("ok", "failed", "review") else "todo"
 
     def cached_overlay(self, f: DriveFile) -> Overlay | None:
         """Overlay info without any download or OCR (None when the image has not been prebuilt)."""
@@ -155,12 +186,8 @@ class Processor:
             return ov
 
     def is_cached(self, f: DriveFile) -> bool:
-        """True when redacted() can answer from disk (a finished result, masked or withheld)."""
-        meta = self.dir / f"{self._key(f)}.json"
-        if not meta.exists():
-            return False
-        status = json.loads(meta.read_text("utf-8")).get("status")
-        return status == "failed" or (status == "ok" and (self.dir / f"{self._key(f)}.png").exists())
+        """True when redacted() can answer from disk (masked, withheld or waiting for review)."""
+        return self.status(f) != "todo"
 
     def redacted(self, f: DriveFile, raw: bytes | None = None) -> tuple[Image.Image, Overlay]:
         key = self._key(f)
@@ -170,6 +197,8 @@ class Processor:
                 info = json.loads(meta.read_text("utf-8"))
                 if info.get("status") == "failed":
                     raise RedactionFailed()
+                if info.get("status") == "review" and png.exists():
+                    raise NeedsReview()
                 if info.get("status") == "ok" and png.exists():
                     with Image.open(png) as im:
                         im.load()
@@ -186,23 +215,71 @@ class Processor:
                 tags = _tag_overlay(dicom.read_meta(raw, self.cfg.pii_terms))
             del raw
             try:
-                img, ov = redact(source_img, self.cfg.ocr_langs, self.cfg.pii_terms, self.template_for(f))
-                ov = _merge(tags, ov)
+                result = redact(source_img, self.cfg.ocr_langs, self.cfg.pii_terms, self.template_for(f))
             except RedactionFailed:
                 self._write(meta, json.dumps({"status": "failed", "overlay": Overlay("", "", "").__dict__}).encode())
                 raise
+            img, ov = result.img, _merge(tags, result.overlay)
+            status = "review" if result.review_boxes else "ok"
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             self._write(png, buf.getvalue())
-            self._write(meta, json.dumps({"status": "ok", "overlay": ov.__dict__}).encode())
+            self._write(meta, json.dumps({
+                "status": status, "overlay": ov.__dict__,
+                "mask_boxes": result.mask_boxes, "review_boxes": result.review_boxes,
+            }).encode())
+            if status == "review":
+                raise NeedsReview()
             return img, ov
 
 
-def _caption(study: Study, series: Series, sl: Slice, ov: Overlay) -> str:
-    parts = [f"{study.id} S{series.number} I{sl.index:04d}", ov.plane or "plane ?"]
-    parts.append(f"SL {ov.sl}" if ov.sl else "SL ?")
-    parts.append(f"ST {ov.st}" if ov.st else "ST ?")
-    return " | ".join(parts)
+def vote_plane(readings: list[str]) -> str:
+    """Series name from many per-image OCR readings: tokens seen in >= 30% of readings (min 2) are kept,
+    e.g. 10x "SAG PD" + 6x "SAG PD FS" -> "SAG PD FS"."""
+    readings = [r for r in readings if r]
+    if not readings:
+        return ""
+    counts = Counter(t for r in readings for t in dict.fromkeys(r.split()))
+    need = len(readings) / 2 if len(readings) < 5 else max(2, 0.3 * len(readings))  # few readings: majority
+    keep = {t for t, n in counts.items() if n >= need} or {counts.most_common(1)[0][0]}
+    best = max(readings, key=lambda r: (len([t for t in r.split() if t in keep]), readings.count(r)))
+    ordered = [t for t in dict.fromkeys(best.split()) if t in keep]
+    ordered += [t for t, _ in counts.most_common() if t in keep and t not in ordered]
+    return " ".join(ordered)
+
+
+def repair_sl(values: dict[int, str]) -> dict[int, str]:
+    """Fix OCR'd slice locations within one series.
+
+    Slice locations change linearly with the image number, so a robust line through the readings exposes
+    misreads such as a dropped decimal point ("84.23" -> "8423"). Those are rescaled when that fits the
+    line; values that still do not fit, and missing ones, are filled from the line and marked with "~"."""
+    nums: dict[int, float] = {}
+    for idx, v in values.items():
+        try:
+            nums[idx] = float(v)
+        except (TypeError, ValueError):
+            pass
+    plausible = {i: v for i, v in nums.items() if abs(v) < 400}
+    if len(plausible) < 3:
+        return {i: f"{v:g}" for i, v in plausible.items()}
+    pts = sorted(plausible.items())
+    slopes = sorted((b[1] - a[1]) / (b[0] - a[0]) for a, b in zip(pts, pts[1:]) if b[0] != a[0])
+    slope = slopes[len(slopes) // 2]
+    intercept = sorted(v - slope * i for i, v in pts)[len(pts) // 2]
+    tol = max(1.0, abs(slope) * 1.5)
+    out: dict[int, str] = {}
+    for idx in sorted(set(values) | set(nums)):
+        pred = intercept + slope * idx
+        v = nums.get(idx)
+        fixed = None
+        if v is not None:
+            for cand in (v, v / 10, v / 100, v / 1000, -v, -v / 10, -v / 100):
+                if abs(cand - pred) <= tol:
+                    fixed = cand
+                    break
+        out[idx] = f"{round(fixed, 2):g}" if fixed is not None else f"~{round(pred, 1):g}"
+    return out
 
 
 class KneeService:
@@ -220,6 +297,22 @@ class KneeService:
         self._hosp_index: object = None
         self._hosp_by_id: dict[str, str] = {}
         self.proc = Processor(cfg, source, files, self.metas, self._template_for)
+
+    def series_profile(self, se: Series) -> tuple[str, dict[int, str]]:
+        """(voted series name, repaired SL per image number) from the prebuilt per-image readings."""
+        ovs = {s.index: self.proc.cached_overlay(s.file) for s in se.slices}
+        plane = vote_plane([o.plane for o in ovs.values() if o])
+        sls = repair_sl({i: o.sl for i, o in ovs.items() if o and o.sl})
+        return plane, sls
+
+    def _caption(self, study: Study, series: Series, sl: Slice, ov: Overlay) -> str:
+        plane, sls = self.series_profile(series)
+        boxes = len(self.proc.info(sl.file).get("mask_boxes", []))
+        parts = [f"{study.id} S{series.number} I{sl.index:04d}", plane or ov.plane or "plane ?"]
+        parts.append(f"SL {sls[sl.index]}" if sl.index in sls else "SL ?")
+        parts.append(f"ST {ov.st}" if ov.st else "ST ?")
+        parts.append(f"masked boxes {boxes}")
+        return " | ".join(parts)
 
     def _template_for(self, f: DriveFile) -> list | None:
         """Mask template of the hospital the file's study belongs to (None: OCR-only masking)."""
@@ -267,25 +360,18 @@ class KneeService:
     def list_series(self, study: str) -> str:
         """Summarized from prebuilt results only: no download, no OCR at request time."""
         st = self.catalog.index().get_study(study)
-        lines = [f"{st.id} ({st.kind})", "series | images | I range | plane | SL range | prebuilt"]
+        lines = [f"{st.id} ({st.kind})", "series | images | I range | plane (voted) | SL range | prebuilt | review"]
         todo_total = 0
         for se in st.series.values():
-            ovs = [self.proc.cached_overlay(s.file) for s in se.slices]
-            done = sum(1 for s in se.slices if self.proc.status(s.file) != "todo")
+            statuses = [self.proc.status(s.file) for s in se.slices]
+            done = sum(1 for x in statuses if x != "todo")
             todo_total += len(se.slices) - done
-            planes = Counter(o.plane for o in ovs if o and o.plane)
-            plane = planes.most_common(1)[0][0] if planes else "?"
-            sls = []
-            for o in ovs:
-                if o and o.sl:
-                    try:
-                        sls.append(float(o.sl))
-                    except ValueError:
-                        pass
-            sl_range = f"{min(sls):g} .. {max(sls):g}" if len(sls) >= 2 else (f"{sls[0]:g}" if sls else "?")
+            plane, sls = self.series_profile(se)
+            vals = [float(v) for v in sls.values() if not v.startswith("~")]
+            sl_range = f"{min(vals):g} .. {max(vals):g}" if len(vals) >= 2 else (f"{vals[0]:g}" if vals else "?")
             lines.append(
                 f"S{se.number} | {len(se.slices)} | I{se.slices[0].index:04d}-I{se.slices[-1].index:04d}"
-                f" | {plane} | {sl_range} | {done}/{len(se.slices)}"
+                f" | {plane or '?'} | {sl_range} | {done}/{len(se.slices)} | {statuses.count('review')}"
             )
         if todo_total:
             lines.append(f"{todo_total} images not prebuilt yet; plane/SL fill in as `python -m knee_mcp.prebuild` runs")
@@ -385,7 +471,7 @@ class KneeService:
         sl = se.get(int(index))
         img, ov = self._one_ready(sl.file, f"I{sl.index:04d}")
         out = imaging.apply_zoom(imaging.apply_crop(img, crop), zoom)
-        caption = _caption(st, se, sl, ov) + f" | size {img.width}x{img.height}"
+        caption = self._caption(st, se, sl, ov) + f" | size {img.width}x{img.height}"
         if crop:
             caption += f" | crop {list(crop)}"
         return Rendered(imaging.to_png(out, self.cfg.max_png_bytes), caption)
@@ -406,7 +492,7 @@ class KneeService:
             if state == "ok":
                 img, ov = val  # type: ignore[misc]
                 png = imaging.to_png(imaging.apply_crop(img, crop), self.cfg.max_png_bytes)
-                out.append(Rendered(png, _caption(st, se, sl, ov)))
+                out.append(Rendered(png, self._caption(st, se, sl, ov)))
             elif state == "pending":
                 pending.append(label)
             elif state == "withheld":
@@ -444,7 +530,12 @@ class KneeService:
         m = self.prebuild()
         return sum(e["redaction_status"] == "ok" for e in m), sum(e["redaction_status"] != "ok" for e in m)
 
-    def prebuild(self, progress: Callable[[str], None] | None = None, download_threads: int = 4) -> list[dict]:
+    def prebuild(
+        self,
+        progress: Callable[[str], None] | None = None,
+        download_threads: int = 4,
+        debug_dir: Path | None = None,
+    ) -> list[dict]:
         """Mask every image ahead of time and write <cache>/manifest.json.
 
         Incremental: images whose fileId + modifiedTime (and mask settings) were already processed are
@@ -466,7 +557,7 @@ class KneeService:
             if err is None:
                 try:
                     self.proc.redacted(it[2].file, raw)
-                except (RedactionFailed, KneeError):
+                except KneeError:  # withheld / needs review / undecodable: recorded in its status
                     pass
 
         done = 0
@@ -479,20 +570,46 @@ class KneeService:
                 say(f"{done}/{len(todo)} processed")
 
         manifest = []
+        profiles = {}
         for st, se, sl in items:
+            if id(se) not in profiles:
+                profiles[id(se)] = self.series_profile(se)
+            plane, sls = profiles[id(se)]
             status = self.proc.status(sl.file)
+            info = self.proc.info(sl.file)
             ov = self.proc.cached_overlay(sl.file)
             size = None
-            if status == "ok":
+            if status in ("ok", "review"):
                 with Image.open(self.proc.png_path(sl.file)) as im:
                     size = list(im.size)
+                    if debug_dir is not None:
+                        _debug_overlay(im, info, debug_dir / f"{st.id}_S{se.number}_I{sl.index:04d}.png")
             manifest.append({
                 "study": st.id, "series": se.number, "index": sl.index,
-                "plane": ov.plane if ov else "", "sl": ov.sl if ov else "", "st": ov.st if ov else "",
+                "plane": plane or (ov.plane if ov else ""), "sl": sls.get(sl.index, ""), "st": ov.st if ov else "",
                 "size": size, "fileId": sl.file.id, "modifiedTime": sl.file.modified_time,
-                "masked_path": f"redacted/{self.proc.png_path(sl.file).name}" if status == "ok" else None,
+                "masked_path": f"redacted/{self.proc.png_path(sl.file).name}" if status in ("ok", "review") else None,
                 "redaction_status": "withheld" if status == "failed" else status,
+                "mask_boxes": info.get("mask_boxes", []),
+                "review_boxes": info.get("review_boxes", []),
             })
         Processor._write(self.cfg.cache_dir / "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=1).encode())
         say("manifest.json written")
         return manifest
+
+
+def _debug_overlay(masked: Image.Image, info: dict, path: Path) -> None:
+    """Masked image with every blacked-out box outlined in red and review boxes in yellow, for checking.
+
+    Drawn on the masked image, so it shows no more than the tools do (review boxes are not masked: keep the
+    debug folder private)."""
+    from PIL import ImageDraw
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img = masked.convert("RGB")
+    draw = ImageDraw.Draw(img)
+    for b in info.get("mask_boxes", []):
+        draw.rectangle((b[0], b[1], b[2] - 1, b[3] - 1), outline=(255, 40, 40), width=2)
+    for b in info.get("review_boxes", []):
+        draw.rectangle((b[0] - 2, b[1] - 2, b[2] + 1, b[3] + 1), outline=(255, 220, 0), width=2)
+    img.save(path)

@@ -12,16 +12,28 @@ import sys
 import time
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    from pathlib import Path
+
     from .server import build_service, setup
 
+    parser = argparse.ArgumentParser(prog="python -m knee_mcp.prebuild")
+    parser.add_argument("--debug-overlays", metavar="DIR", help="also write every masked image with its "
+                        "blacked-out boxes outlined (red) and review boxes (yellow) to DIR")
+    args = parser.parse_args(argv)
     cfg = setup()
     service = build_service(cfg)
     t0 = time.time()
-    manifest = service.prebuild(progress=lambda m: print(f"[{time.time() - t0:6.0f}s] {m}", flush=True))
+    manifest = service.prebuild(
+        progress=lambda m: print(f"[{time.time() - t0:6.0f}s] {m}", flush=True),
+        debug_dir=Path(args.debug_overlays) if args.debug_overlays else None,
+    )
     ok = sum(e["redaction_status"] == "ok" for e in manifest)
     withheld = sum(e["redaction_status"] == "withheld" for e in manifest)
-    print(f"done: {ok} masked, {withheld} withheld, {len(manifest) - ok - withheld} not processed")
+    review = sum(e["redaction_status"] == "review" for e in manifest)
+    print(f"done: {ok} masked, {review} waiting for review, {withheld} withheld, "
+          f"{len(manifest) - ok - withheld - review} not processed")
     return 0
 
 

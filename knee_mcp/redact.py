@@ -1,57 +1,61 @@
 """PII masking for burned-in overlay text.
 
-Policy (allowlist, fail closed):
-  * Every OCR'd word is masked unless it is an orientation letter (R/L/A/P/S/I), a sequence/plane word
-    (COR, SAG, AX, PD, T2, FS ...), a technical key (SL, ST, TR, TE ...) or a short number right after a
-    technical key. Names, chart numbers, birth dates and doctor names therefore never need to be recognised
-    as such: anything not on the list is blacked out.
-  * After masking, the image is OCR'd again. If any word that could carry identity survives (3+ letters or
-    digits not on the allowlist, a 4+ digit run, CJK text, or one of KNEE_PII_TERMS), the image is withheld.
+Policy: only two kinds of area may be blacked out, the anatomy is never touched.
+  (a) the hospital's edge text bands (templates.py), applied first;
+  (b) OCR text boxes in the edge area whose *content* looks like personal data: a CJK name (2+ CJK
+      characters), a chart number (6+ digits), a date / birth date, a Taiwan ID number, a physician name
+      (the words after "Dr"), or one of KNEE_PII_TERMS. Each box is blacked out tightly.
+Orientation letters, sequence names, technical parameters and low-confidence reads are never masked.
+
+Personal-data-like text found inside the anatomy area is not masked either: the image is marked for
+manual review (redaction_status "review") with the box coordinates. If PII-like text in the edge area
+is still readable after masking, the image is withheld (RedactionFailed).
 """
 
 from __future__ import annotations
 
 import io
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PIL import Image, ImageDraw, ImageOps
 
 from .errors import RedactionFailed
 from .templates import Rect, apply_template
 
-REDACTION_VERSION = "12"
+REDACTION_VERSION = "13"
 MAX_WORD_H = 0.06  # an OCR "word" taller than this (fraction of image height) is not overlay text
 MAX_WORD_W = 0.60
-TEXT_ZONE_MARGIN = 0.03  # how far around a template rectangle stray overlay text may still sit
-MAX_MASK_PASSES = 6
+MAX_MASK_PASSES = 4
+PII_MIN_CONF = 60  # reads below this are texture noise, never masked
+REVIEW_MIN_CONF = 70  # PII-like text inside the anatomy area at or above this triggers manual review
+# The edge area where overlay text lives; everything inside it is anatomy and is never masked.
+EDGE_X = 0.22
+EDGE_TOP = 0.20
+EDGE_BOTTOM = 0.80
 
-ORIENTATION = {"R", "L", "A", "P", "S", "I"}
-TECH_KEYS = {
-    # Deliberately no 1-2 letter keys that are also common surnames (MA, HO, LI ...).
-    "SL", "ST", "TR", "TE", "TI", "ET", "FA", "FOV", "NEX", "THK", "SP", "MM", "MS", "WW", "WL",
-    "ZOOM", "MAG", "SE", "SER", "IM", "IMA", "IMG", "KVP",
-}
 SEQ_WORDS = {
     "COR", "CORONAL", "SAG", "SAGITTAL", "AX", "AXI", "AXIAL", "TRA", "TRANS", "TRANSVERSE",
     "PD", "PDW", "PDFS", "T1", "T2", "T1W", "T2W", "T1FS", "T2FS", "FS", "FAT", "SAT", "FSE", "TSE", "GRE",
     "STIR", "SPIR", "SPAIR", "DESS", "MEDIC", "FLASH", "TIRM", "FLAIR", "IR", "3D", "2D", "FIESTA",
     "MERGE", "DIXON", "WATER", "SPGR", "CUBE", "VIBE", "HR", "PROPELLER", "BLADE", "MRI", "MR", "KNEE",
 }
+TECH_KEYS = {"SL", "ST", "TR", "TE", "TI", "ET", "FA", "FOV", "NEX", "THK", "SP", "WW", "WL", "SE", "IM", "KVP"}
 _PLANE = {
     "COR": "COR", "CORONAL": "COR", "SAG": "SAG", "SAGITTAL": "SAG",
     "AX": "Axial", "AXI": "Axial", "AXIAL": "Axial", "TRA": "Axial", "TRANS": "Axial", "TRANSVERSE": "Axial",
 }
-_NUM_RE = re.compile(r"^[+-]?\d{1,3}(?:\.\d{1,2})?(?:MM|MS)?$")
-_KEYNUM_RE = re.compile(r"^(SL|ST|TR|TE|TI|FA|FOV|THK|SP)[:=]?[+-]?\d{1,4}(?:\.\d{1,2})?(?:MM|MS)?$")
-# Texture inside the anatomy OCRs as short low-confidence "words" (seen up to ~50); real overlay text is 80+.
-CENTRAL_CONF = 60
-# Verification floor inside the anatomy area: real overlay text scores 80+, texture misreads up to ~70.
-CENTRAL_VERIFY_CONF = 75
-TEMPLATE_ZONE_CONF = 70  # verification floor in the strip around a mask template
-MIN_TEXT_H = 0.015  # overlay characters are ~3% of the image height; specks below 1.5% are not text
 _STRIP = ":;,=[](){}<>|'\"`*"
-_CJK_RE = re.compile(r"[　-鿿가-힯＀-￯]")
+_CJK_RE = re.compile(r"[㐀-鿿豈-﫿]")
+_MONTHS = "JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC"
+_PII_PATTERNS = [
+    re.compile(r"[A-Z][12]\d{8}"),  # Taiwan national ID
+    re.compile(r"(19|20)\d{2}\s?[-/.年]\s?\d{1,2}\s?[-/.月]\s?\d{1,2}"),  # 1975/04/12, 1975年4月12
+    re.compile(r"(?<!\d)(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)"),  # 19750412
+    re.compile(r"(?<!\d)\d{1,2}[-/.](0?[1-9]|1[0-2])[-/.](19|20)?\d{2}(?!\d)"),  # 12/04/1975
+    re.compile(rf"\d{{1,2}}[- ]?({_MONTHS})[- ]?\d{{2,4}}", re.IGNORECASE),  # 12-APR-1975
+    re.compile(r"\d[\d\-]{4,}\d"),  # chart / ID numbers: 6+ characters of digits and dashes
+]
 
 
 @dataclass
@@ -60,6 +64,14 @@ class Word:
     conf: float
     box: tuple[int, int, int, int]
     line: tuple[int, int, int, int]  # (variant, block, par, line)
+
+
+@dataclass
+class Redacted:
+    img: Image.Image
+    overlay: "Overlay"
+    mask_boxes: list[list[int]] = field(default_factory=list)  # every blacked-out rectangle, in pixels
+    review_boxes: list[list[int]] = field(default_factory=list)  # PII-like text left in the anatomy area
 
 
 def _norm(text: str) -> str:
@@ -96,151 +108,75 @@ def ocr_words(img: Image.Image, langs: str) -> list[Word]:
     return words
 
 
-def _allowed_flags(words: list[Word]) -> list[bool]:
-    """Per word: True when the word is allowed to stay visible."""
-    out = [False] * len(words)
-    prev_by_line: dict[tuple, str] = {}
-    for i in sorted(range(len(words)), key=lambda i: (words[i].line, words[i].box[0])):
-        word = words[i]
-        t = _norm(word.text)
-        prev = prev_by_line.get(word.line, "")
-        out[i] = not _CJK_RE.search(word.text) and (
-            (len(t) == 1 and t in ORIENTATION)
-            or t in SEQ_WORDS
-            or t in TECH_KEYS
-            or bool(_KEYNUM_RE.match(t))
-            or (bool(_NUM_RE.match(t)) and prev in TECH_KEYS)
-        )
-        prev_by_line[word.line] = t
-    return out
-
-
-def _is_border(box: tuple[int, int, int, int], size: tuple[int, int], zones: list[Rect] | None = None) -> bool:
-    """Is this box where overlay text lives?
-
-    Without a hospital template: the outer quarter of the image on every side. With a template: only near
-    the template rectangles (expanded by TEXT_ZONE_MARGIN); everything else is anatomy, which is verified
-    but never masked."""
+def in_edge(box: tuple[int, int, int, int] | list[int], size: tuple[int, int]) -> bool:
+    """Is the box (by its center) in the edge area where overlay text lives?"""
     w, h = size
-    if zones is not None:
-        x0, y0, x1, y1 = box[0] / w, box[1] / h, box[2] / w, box[3] / h
-        return any(x0 < z[2] and x1 > z[0] and y0 < z[3] and y1 > z[1] for z in zones)
-    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-    return cx < 0.25 * w or cx > 0.75 * w or cy < 0.25 * h or cy > 0.75 * h
+    cx, cy = (box[0] + box[2]) / 2 / w, (box[1] + box[3]) / 2 / h
+    return cx < EDGE_X or cx > 1 - EDGE_X or cy < EDGE_TOP or cy > EDGE_BOTTOM
 
 
-def text_zones(template: list[Rect] | None) -> list[Rect] | None:
-    if not template:
-        return None
-    m = TEXT_ZONE_MARGIN
-    return [(max(0.0, r[0] - m), max(0.0, r[1] - m), min(1.0, r[2] + m), min(1.0, r[3] + m)) for r in template]
-
-
-def _should_mask(word: Word, allowed: bool, size: tuple[int, int], zones: list[Rect] | None = None) -> bool:
-    if allowed:
-        return False
-    # Overlay text sits in the margins: mask anything there. In the central (anatomy) area, low-confidence
-    # "words" are texture noise; masking them would black out anatomy, so only confident text is masked.
-    # The verification pass uses the same confidence floor, so nothing legible can slip between the two.
-    if _is_border(word.box, size, zones):
+def looks_like_pii(text: str, pii_terms: list[str] | None = None) -> bool:
+    """Content test only: CJK name, chart number, date / birth date, Taiwan ID, configured terms."""
+    t = text.strip()
+    low = t.lower()
+    if any(term and term.lower() in low for term in pii_terms or []):
         return True
-    if _CJK_RE.search(word.text):
-        return word.conf >= CENTRAL_CONF
-    a = _alnum(word.text)
-    if len(a) < 2:  # lone symbols / single characters in the texture carry no identity
-        return False
-    return word.conf >= CENTRAL_CONF or bool(re.search(r"\d{4,}", a))
-
-
-def _is_residual(
-    word: Word, allowed: bool, size: tuple[int, int], pii_terms: list[str], zones: list[Rect] | None = None
-) -> bool:
-    """Would this OCR word, left visible, risk identifying the patient?
-
-    Without a template the outer quarter of the image is the text area and judged strictly. With a
-    template the known text is already black; the strip around it (zones) mostly yields misreads of the
-    black/anatomy boundary (single 0-5 px "characters", conf 50-70 on real images), so single CJK
-    characters there must be text-sized and confident, and pairs are judged by _cjk_pairs."""
-    if allowed:
-        return False
-    text = word.text
-    if any(t and t.lower() in text.lower() for t in pii_terms):
+    if len(_CJK_RE.findall(t)) >= 2:
         return True
-    a = _alnum(text)
-    templated = zones is not None
-    border = _is_border(word.box, size, zones)
-    if border:
-        floor = TEMPLATE_ZONE_CONF if templated else 50
-    else:
-        floor = CENTRAL_VERIFY_CONF
-    if re.search(r"\d{4,}", a) and word.conf >= (floor if templated or not border else 30):
-        return True
-    cjk = len(_CJK_RE.findall(text))
-    if cjk >= 2 and word.conf >= floor:
-        return True
-    if cjk == 1 and border:
-        if not templated and word.conf >= floor:
-            return True
-        if templated and word.conf >= 80 and (word.box[3] - word.box[1]) >= MIN_TEXT_H * size[1]:
-            return True
-    return len(a) >= 3 and word.conf >= floor
+    up = t.upper()
+    return any(p.search(up) for p in _PII_PATTERNS)
 
 
-def _center_cjk_pairs(
-    words: list[Word], flags: list[bool], size: tuple[int, int], zones: list[Rect] | None = None
-) -> bool:
-    """Two single CJK characters side by side, both text-sized and confident.
+def pii_words(words: list[Word], pii_terms: list[str] | None = None, min_conf: float = PII_MIN_CONF) -> list[Word]:
+    """Words whose content looks like personal data, plus the 1-3 words after a "Dr" title on the same line.
 
-    OCR sometimes splits a name into one word per character; specks of texture also read as single
-    characters, but they are tiny (2-11 px on a 512 px image) and rarely sit in a neat row. Checked in the
-    anatomy area, and with a template also in the strip around it."""
-    min_h = MIN_TEXT_H * size[1]
-    templated = zones is not None
-
-    def eligible(w: Word, ok: bool) -> bool:
-        if ok or len(_CJK_RE.findall(w.text)) != 1 or (w.box[3] - w.box[1]) < min_h:
-            return False
-        if _is_border(w.box, size, zones):
-            return templated and w.conf >= TEMPLATE_ZONE_CONF
-        return w.conf >= CENTRAL_VERIFY_CONF
-
-    singles = [w for w, ok in zip(words, flags) if eligible(w, ok)]
-    for i, a in enumerate(singles):
-        ah = a.box[3] - a.box[1]
-        for b in singles[i + 1:]:
-            bh = b.box[3] - b.box[1]
-            if max(ah, bh) > 1.6 * min(ah, bh):
+    Tesseract often returns a Chinese name as one word per character, so runs of adjacent CJK words on a
+    line are judged together."""
+    hits = [w for w in words if w.conf >= min_conf and looks_like_pii(w.text, pii_terms)]
+    by_line: dict[tuple, list[Word]] = {}
+    for w in words:
+        by_line.setdefault(w.line, []).append(w)
+    for ws in by_line.values():
+        ws.sort(key=lambda w: w.box[0])
+        run: list[Word] = []
+        for w in ws + [None]:  # type: ignore[list-item]
+            cjk_word = w is not None and w.conf >= min_conf and _CJK_RE.fullmatch(w.text.strip()[:1] or "x") is not None
+            if cjk_word and run:
+                prev = run[-1]
+                h = max(prev.box[3] - prev.box[1], w.box[3] - w.box[1], 1)
+                if w.box[0] - prev.box[2] > 1.5 * h:  # gap too wide: close the run, start a new one
+                    if len(_CJK_RE.findall("".join(x.text for x in run))) >= 2:
+                        hits.extend(run)
+                    run = []
+            if cjk_word:
+                run.append(w)
                 continue
-            same_row = abs((a.box[1] + a.box[3]) - (b.box[1] + b.box[3])) / 2 < 0.5 * max(ah, bh)
-            gap = max(a.box[0], b.box[0]) - min(a.box[2], b.box[2])
-            narrow = min(a.box[2] - a.box[0], b.box[2] - b.box[0])
-            if gap < -0.5 * narrow:
-                continue  # the same glyph seen by two OCR runs, not two characters
-            if same_row and gap < 1.5 * max(ah, bh):
-                return True
-    return False
+            if len(_CJK_RE.findall("".join(x.text for x in run))) >= 2:
+                hits.extend(run)
+            run = []
+        for i, w in enumerate(ws):
+            if re.fullmatch(r"DR\.?|DR\.\w+", _norm(w.text)) and w.conf >= min_conf:
+                hits.append(w)
+                hits.extend(x for x in ws[i + 1:i + 4] if x.conf >= min_conf)
+    return hits
 
 
-def _mask(
-    img: Image.Image, words: list[Word], flags: list[bool], skip_center: bool = False, zones: list[Rect] | None = None
-) -> int:
-    """Black out maskable words. With a hospital template the text bands are already black, so the
-    anatomy area is only verified, never masked: masking there makes black-box edges that OCR then reads
-    as new "text", which cascaded into false redaction failures on real images."""
+def _box_for(word: Word, size: tuple[int, int]) -> list[int]:
+    x0, y0, x1, y1 = word.box
+    pad = 2 + int(0.15 * (y1 - y0))
+    return [max(0, x0 - pad), max(0, y0 - pad), min(size[0], x1 + pad), min(size[1], y1 + pad)]
+
+
+def _blackout(img: Image.Image, boxes: list[list[int]]) -> None:
     draw = ImageDraw.Draw(img)
     fill = 0 if img.mode in ("L", "1", "I", "F") else (0,) * len(img.getbands())
-    n = 0
-    for w, ok in zip(words, flags):
-        if not _should_mask(w, ok, img.size, zones):
-            continue
-        if skip_center and not _is_border(w.box, img.size, zones):
-            continue
-        x0, y0, x1, y1 = w.box
-        hgt = max(4, y1 - y0)
-        px, py = int(0.6 * hgt) + 2, int(0.3 * hgt) + 2
-        draw.rectangle((max(0, x0 - px), max(0, y0 - py), min(img.width, x1 + px), min(img.height, y1 + py)), fill=fill)
-        n += 1
-    return n
+    for x0, y0, x1, y1 in boxes:
+        draw.rectangle((x0, y0, x1 - 1, y1 - 1), fill=fill)
+
+
+def template_boxes(template: list[Rect] | None, size: tuple[int, int]) -> list[list[int]]:
+    w, h = size
+    return [[int(r[0] * w), int(r[1] * h), int(r[2] * w), int(r[3] * h)] for r in template or []]
 
 
 @dataclass
@@ -251,7 +187,7 @@ class Overlay:
 
 
 def read_overlay(words: list[Word]) -> Overlay:
-    """Plane / sequence and SL / ST from the original overlay; only allowlisted tokens can come out."""
+    """Plane / sequence and SL / ST from the original overlay; only known tokens and numbers come out."""
     lines: dict[tuple, list[Word]] = {}
     for w in words:
         lines.setdefault(w.line, []).append(w)
@@ -265,7 +201,7 @@ def read_overlay(words: list[Word]) -> Overlay:
             best = seq
         joined = " ".join(toks)
         for key in ("SL", "ST"):
-            m = re.search(rf"(?:^| ){key}[:=]? ?([+-]?\d{{1,4}}(?:\.\d{{1,2}})?)(?:MM)?(?= |$)", joined)
+            m = re.search(rf"(?:^| ){key}[:=]? ?([+-]?\d{{1,5}}(?:\.\d{{1,2}})?)(?:MM)?(?= |$)", joined)
             if m:
                 if key == "SL" and not sl:
                     sl = m.group(1)
@@ -280,8 +216,10 @@ def redact(
     langs: str = "eng",
     pii_terms: list[str] | None = None,
     template: list[Rect] | None = None,
-) -> tuple[Image.Image, Overlay]:
-    """Return (masked image, overlay info). Raises RedactionFailed if identifying text survives."""
+) -> Redacted:
+    """Black out the template bands and PII-like text at the edges; flag PII-like text in the anatomy.
+
+    Raises RedactionFailed if PII-like edge text is still readable after masking."""
     terms = pii_terms or []
     if isinstance(raw, Image.Image):
         src = raw
@@ -289,31 +227,34 @@ def redact(
         src = Image.open(io.BytesIO(raw))
         src.load()
     img = src.convert("L") if src.mode not in ("L", "RGB") else src.copy()
+    size = img.size
 
-    zones = text_zones(template)
     words = ocr_words(img, langs)
     overlay = read_overlay(words)  # plane / SL / ST are read before anything is blacked out
+    mask_boxes = template_boxes(template, size)
     if template:
-        # Known overlay layout: black out the text bands, then OCR only *verifies* the rest. Nothing else is
-        # masked, so the anatomy stays exactly as in the original; if text is found the image is withheld
-        # (and the template needs adjusting) rather than covered with extra black boxes.
         apply_template(img, template)
-        final = ocr_words(img, langs)
+        words = ocr_words(img, langs)
+
+    for _ in range(MAX_MASK_PASSES):
+        targets = [w for w in pii_words(words, terms) if in_edge(w.box, size)]
+        if not targets:
+            break
+        boxes = [_box_for(w, size) for w in targets]
+        _blackout(img, boxes)
+        mask_boxes.extend(boxes)
+        words = ocr_words(img, langs)
     else:
-        # No template: some text (e.g. a name squeezed against the image edge next to other text) only
-        # becomes legible once its neighbours are masked, so OCR and mask until a pass finds nothing new.
-        final = words
-        for _ in range(MAX_MASK_PASSES):
-            if _mask(img, final, _allowed_flags(final)) == 0:
-                break  # image unchanged since `final` was read: it doubles as the verification pass
-            final = ocr_words(img, langs)
-    flags = _allowed_flags(final)
-    if any(_is_residual(w, ok, img.size, terms, zones) for w, ok in zip(final, flags)):
-        raise RedactionFailed()
-    if _center_cjk_pairs(final, flags, img.size, zones):
-        raise RedactionFailed()
-    if terms:
-        flat = re.sub(r"\s+", "", " ".join(w.text for w in final)).lower()
-        if any(re.sub(r"\s+", "", t).lower() in flat for t in terms):
+        if any(in_edge(w.box, size) for w in pii_words(words, terms)):
             raise RedactionFailed()
-    return img, overlay
+
+    review = [w for w in pii_words(words, terms, REVIEW_MIN_CONF) if not in_edge(w.box, size)]
+    return Redacted(img, overlay, _dedupe(mask_boxes), _dedupe([list(w.box) for w in review]))
+
+
+def _dedupe(boxes: list[list[int]]) -> list[list[int]]:
+    out: list[list[int]] = []
+    for b in boxes:
+        if b not in out:
+            out.append(b)
+    return out

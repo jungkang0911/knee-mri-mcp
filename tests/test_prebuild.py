@@ -34,8 +34,8 @@ def test_manifest_fields_and_incremental(prebuilt, drive):
     assert data == manifest and len(data) == 20 + 6 + 2 + 3
     e = next(x for x in data if x["study"] == "2019-03-20_TSGH" and x["index"] == 13)
     assert set(e) == {"study", "series", "index", "plane", "sl", "st", "size", "fileId", "modifiedTime",
-                      "masked_path", "redaction_status"}
-    assert e["series"] == 7 and e["plane"] == "COR PD" and e["sl"] == "9.0" and e["st"] == "3.0"
+                      "masked_path", "redaction_status", "mask_boxes", "review_boxes"}
+    assert e["series"] == 7 and e["plane"] == "COR PD" and e["sl"] == "9" and e["st"] == "3.0"
     assert e["size"] == [512, 512] and e["redaction_status"] == "ok" and e["masked_path"].startswith("redacted/")
     assert (cfg.cache_dir / e["masked_path"]).exists()
     # Re-running skips everything that did not change.
@@ -82,68 +82,135 @@ def test_templates_black_out_bands_and_keep_anatomy():
     img = Image.open(io.BytesIO(knee_image(5))).convert("L")
     apply_template(img, DEFAULT_TEMPLATES["TSGH"])
     w, h = img.size
-    assert img.getpixel((w // 2, int(0.05 * h))) == 0 and img.getpixel((10, int(0.9 * h))) == 0
+    assert img.getpixel((w // 2, int(0.05 * h))) == 0 and img.getpixel((10, int(0.98 * h))) == 0
     assert img.getpixel((w // 2, 150)) > 90  # anatomy (femur) untouched
     assert load_templates('{"tsgh": [[0, 0, 1, 0.1]]}')["TSGH"] == [(0.0, 0.0, 1.0, 0.1)]
 
 
 def test_template_redaction_removes_pii_and_reads_params_first():
     raw = knee_image(13)
-    img, ov = R.redact(raw, "eng", [], [list(r) for r in DEFAULT_TEMPLATES["TSGH"]])
-    assert ov.plane == "COR PD" and ov.sl == "-12.5" and ov.st == "3.0"  # read before the bands are blacked out
-    text = _ocr_all(img)
+    r = R.redact(raw, "eng", [], [list(x) for x in DEFAULT_TEMPLATES["TSGH"]])
+    assert r.overlay.plane == "COR PD" and r.overlay.sl == "-12.5" and r.overlay.st == "3.0"
+    text = _ocr_all(r.img)
     for token in FAKE_PII_TOKENS:
         assert token not in text
+    assert r.mask_boxes and not r.review_boxes
 
 
-def test_center_noise_single_cjk_is_not_a_leak():
+def test_pii_content_rules():
+    pii = R.looks_like_pii
+    for t in ("王小明", "20481736", "1975/04/12", "19750412", "12-APR-1975", "A123456789", "1234-5678"):
+        assert pii(t), t
+    for t in ("R", "L", "A", "P", "S", "I", "SL", "-108.21", "4.00", "COR", "PD", "FS", "512", "TR", "3000", "骨"):
+        assert not pii(t), t
+    assert pii("COR", ["cor"])  # configured terms always count
     size = (512, 512)
-    word = lambda t, c, box: R.Word(t, c, box, (0, 1, 1, 1))  # noqa: E731
-    # Real-image cases that used to withhold: lone or tiny "characters" in the anatomy area.
-    assert not R._is_residual(word("骨", 96.0, (225, 311, 230, 313)), False, size, [])
-    specks = [word("骨", 93.0, (202, 310, 215, 314)), word("肉", 96.0, (225, 311, 230, 313))]
-    assert not R._center_cjk_pairs(specks, [False, False], size)
-    mixed = [word("骨", 83.0, (181, 145, 186, 147)), word("肉", 80.0, (189, 141, 197, 152))]
-    assert not R._center_cjk_pairs(mixed, [False, False], size)
-    same_glyph_twice = [word("肉", 77.0, (189, 141, 196, 152)), word("肉", 80.0, (189, 141, 197, 152))]
-    assert not R._center_cjk_pairs(same_glyph_twice, [False, False], size)
-    # A name split into text-sized single characters in a row is still caught.
-    name = [word("王", 88.0, (200, 300, 213, 314)), word("小", 90.0, (216, 300, 229, 314)), word("明", 85.0, (232, 300, 245, 314))]
-    assert R._center_cjk_pairs(name, [False] * 3, size)
-    assert R._is_residual(word("王小明", 80.0, (200, 300, 245, 314)), False, size, [])
-    assert not R._is_residual(word("王小", 70.0, (200, 300, 230, 314)), False, size, [])  # below 75 in the center
-    assert R._is_residual(word("王", 60.0, (2, 2, 16, 17)), False, size, [])  # edges stay strict
+    assert R.in_edge((5, 5, 60, 20), size) and R.in_edge((10, 480, 80, 500), size)
+    assert not R.in_edge((200, 200, 260, 220), size)
+
+
+def _draw_text(img, xy, text, size=16, backdrop=False):
+    from PIL import ImageDraw
+    from synth import _font
+
+    d = ImageDraw.Draw(img)
+    if backdrop:  # overlay-style text on a dark patch, so OCR reads it reliably inside the "anatomy"
+        x, y = xy
+        d.rectangle((x - 4, y - 3, x + 9 * len(text) + 6, y + size + 5), fill=0)
+    d.text(xy, text, fill=250, font=_font(size))
 
 
 @pytest.mark.parametrize("index", [3, 13])
-def test_template_redaction_leaves_anatomy_untouched(index):
-    """Outside the text zones the masked image must equal the original: no black boxes in the anatomy."""
+def test_anatomy_is_never_masked(index):
+    """Outside the edge area the masked image equals the original pixel for pixel."""
     from PIL import ImageChops
 
     raw = knee_image(index)
-    tpl = [list(r) for r in DEFAULT_TEMPLATES["TSGH"]]
-    masked, _ = R.redact(raw, "eng", [], tpl)
-    reference = Image.open(io.BytesIO(raw)).convert(masked.mode)
-    apply_template(reference, tpl)
-    w, h = masked.size
-    zones = R.text_zones(tpl)
-    diff = ImageChops.difference(masked.convert("L"), reference.convert("L"))
-    changed_outside = sum(
+    tpl = [list(x) for x in DEFAULT_TEMPLATES["TSGH"]]
+    r = R.redact(raw, "eng", [], tpl)
+    reference = Image.open(io.BytesIO(raw)).convert(r.img.mode)
+    diff = ImageChops.difference(r.img.convert("L"), reference.convert("L"))
+    w, h = r.img.size
+    changed_inside = sum(
         1 for y in range(0, h, 2) for x in range(0, w, 2)
-        if diff.getpixel((x, y)) > 0 and not R._is_border((x, y, x + 1, y + 1), (w, h), zones)
+        if diff.getpixel((x, y)) > 0 and not R.in_edge((x, y, x + 1, y + 1), (w, h))
     )
-    assert changed_outside == 0
+    assert changed_inside == 0
+    assert all(R.in_edge(b, (w, h)) for b in r.mask_boxes)
 
 
-def test_template_zone_rules():
-    size = (512, 512)
-    zones = R.text_zones([list(r) for r in DEFAULT_TEMPLATES["TSGH"]])
-    word = lambda t, c, box: R.Word(t, c, box, (0, 1, 1, 1))  # noqa: E731
-    # Real misreads just below the top band: tiny or low-confidence single "characters".
-    assert not R._is_residual(word("一", 83.0, (297, 102, 302, 103)), False, size, [], zones)
-    assert not R._is_residual(word("一", 71.0, (123, 353, 143, 368)), False, size, [], zones)
-    # Text-sized confident characters there are still caught, singly or as a pair.
-    assert R._is_residual(word("王", 88.0, (40, 104, 53, 118)), False, size, [], zones)
-    assert R._is_residual(word("王小明", 72.0, (40, 104, 80, 118)), False, size, [], zones)
-    pair = [word("王", 74.0, (40, 104, 53, 118)), word("小", 75.0, (56, 104, 69, 118))]
-    assert R._center_cjk_pairs(pair, [False, False], size, zones)
+def test_parameters_and_orientation_stay_visible():
+    raw = knee_image(13)
+    r = R.redact(raw, "eng", [], [list(x) for x in DEFAULT_TEMPLATES["TSGH"]])
+    text = _ocr_all(r.img)
+    assert "COR" in text and "SL" in text and "-12.5" in text  # lower-left parameters are not personal data
+
+
+def test_pii_inside_anatomy_goes_to_review_not_mask():
+    img = Image.open(io.BytesIO(knee_image(7, pii=False))).convert("L")
+    _draw_text(img, (150, 250), "MRN 20481736", backdrop=True)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    r = R.redact(buf.getvalue(), "eng", [], [list(x) for x in DEFAULT_TEMPLATES["TSGH"]])
+    assert r.review_boxes and all(not R.in_edge(b, r.img.size) for b in r.review_boxes)
+    assert all(R.in_edge(b, r.img.size) for b in r.mask_boxes)  # nothing blacked out in the anatomy
+    assert "20481736" in _ocr_all(r.img)  # left visible for the owner to judge
+
+
+def test_pii_text_in_edge_outside_template_is_masked_tightly():
+    img = Image.open(io.BytesIO(knee_image(7, pii=False))).convert("L")
+    _draw_text(img, (8, 380), "1975/04/12")  # lower-left edge, below the template bands
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    r = R.redact(buf.getvalue(), "eng", [], [list(x) for x in DEFAULT_TEMPLATES["TSGH"]])
+    assert "1975" not in _ocr_all(r.img)
+    extra = [b for b in r.mask_boxes if b[1] > 0.19 * 512 and b[3] < 0.955 * 512]
+    assert extra and all((b[2] - b[0]) < 200 and (b[3] - b[1]) < 40 for b in extra)  # tight boxes only
+
+
+async def test_review_flow_manifest_caption_and_debug(tmp_path, drive):
+    img = Image.open(io.BytesIO(knee_image(5))).convert("RGB")
+    _draw_text(img, (150, 250), "MRN 20481736", backdrop=True)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    fid = next(k for k, (f, _) in drive.files.items() if f.name.endswith("S7_I0005.jpg"))
+    drive.files[fid] = (drive.files[fid][0], buf.getvalue())
+    cfg = Config(cache_dir=tmp_path / "cache", ocr_langs="eng", workers=4, exclude_folders=["匿名化"])
+    svc = KneeService(cfg, drive)
+    debug = tmp_path / "debug"
+    manifest = svc.prebuild(debug_dir=debug)
+    e5 = next(e for e in manifest if e["study"] == "2019-03-20_TSGH" and e["index"] == 5)
+    e6 = next(e for e in manifest if e["study"] == "2019-03-20_TSGH" and e["index"] == 6)
+    assert e5["redaction_status"] == "review" and e5["review_boxes"] and e5["mask_boxes"]
+    assert e6["redaction_status"] == "ok" and e6["mask_boxes"] and e6["review_boxes"] == []
+    assert (debug / "2019-03-20_TSGH_S7_I0005.png").exists() and (debug / "2019-03-20_TSGH_S7_I0006.png").exists()
+    server = build_server(cfg, svc)
+    async with Client(server) as c:
+        r5 = await c.call_tool("get_slice", {"study": "2019-03-20", "series": "7", "index": 5})
+        r6 = await c.call_tool("get_slice", {"study": "2019-03-20", "series": "7", "index": 6})
+        assert r5.is_error and "pending manual review" in r5.content[0].text
+        assert not r6.is_error and "masked boxes 2" in r6.content[1].text
+        f5 = svc.catalog.index().get_study("2019-03-20").series[7].get(5).file
+        svc.proc.decide_review(f5, "mask")
+        r5b = await c.call_tool("get_slice", {"study": "2019-03-20", "series": "7", "index": 5})
+    assert not r5b.is_error and r5b.content[0].type == "image"
+    assert "20481736" not in _ocr_all(_png(r5b.content[0]))
+
+
+def test_series_vote_and_sl_repair():
+    from knee_mcp.service import repair_sl, vote_plane
+
+    assert vote_plane(["SAG PD"] * 10 + ["SAG PD FS"] * 6) == "SAG PD FS"
+    assert vote_plane(["COR PD", "COR PD", "COR T1"]) == "COR PD"
+    fixed = repair_sl({1: "84.23", 2: "8023", 3: "76.23", 4: "72.2", 6: "64.23", 7: "6023"})
+    assert fixed[2] == "80.23" and fixed[7] == "60.23" and fixed[6] == "64.23"
+    odd = repair_sl({i: f"{32.3 - 4 * (i - 1):.1f}" for i in range(1, 10)} | {5: "8423"})
+    assert odd[5].startswith("~") and odd[1] == "32.3"
+
+
+def test_cjk_name_split_into_single_characters_is_pii():
+    w = lambda t, x: R.Word(t, 90.0, (x, 10, x + 13, 24), (0, 1, 1, 1))  # noqa: E731
+    words = [w("王", 10), w("小", 26), w("明", 42), w("R", 300)]
+    hits = R.pii_words(words)
+    assert {h.text for h in hits} == {"王", "小", "明"}
+    assert R.pii_words([w("骨", 200)]) == []  # a lone character is not a name

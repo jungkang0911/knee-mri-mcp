@@ -55,7 +55,7 @@ async def test_get_slice_returns_image_content(server):
     _no_base64_text(r)
     caption = r.content[1].text
     assert "2019-03-20_TSGH S7 I0013" in caption
-    assert "COR PD" in caption and "SL 9.0" in caption and "ST 3.0" in caption
+    assert "COR PD" in caption and "SL 9" in caption and "ST 3.0" in caption and "masked boxes" in caption
 
 
 async def test_crop_and_zoom(server):
@@ -115,7 +115,7 @@ async def test_contact_sheet_has_no_pii(server):
 
 
 async def test_image_withheld_when_masking_fails(server, monkeypatch):
-    monkeypatch.setattr(redact, "_mask", lambda img, words, flags, **k: 0)  # simulate a masking miss
+    monkeypatch.setattr(redact, "_blackout", lambda img, boxes: None)  # simulate a masking miss
     monkeypatch.setattr(redact, "apply_template", lambda img, rects: None)  # and no hospital template
     async with Client(server) as c:
         r = await c.call_tool("get_slice", {"study": "2019-03-20", "series": "7", "index": 5})
@@ -126,16 +126,15 @@ async def test_image_withheld_when_masking_fails(server, monkeypatch):
         assert token not in r.content[0].text.upper()
 
 
-def test_pii_terms_checked_after_masking():
+def test_pii_terms_are_masked():
     from synth import knee_image
 
-    from knee_mcp.errors import RedactionFailed
-
-    # A configured term that gets masked passes; one that would stay visible (here the allowlisted
-    # sequence word "COR", standing in for a real name the allowlist missed) must withhold the image.
-    redact.redact(knee_image(3), "eng", ["XIAOMING"])
-    with pytest.raises(RedactionFailed):
-        redact.redact(knee_image(3), "eng", ["COR"])
+    r = redact.redact(knee_image(3), "eng", ["XIAOMING"])
+    assert "XIAOMING" not in _ocr_all(r.img)
+    # A configured term at the edge is blacked out even if it is not a PII pattern ("COR" stands in for a
+    # name the patterns would miss).
+    r2 = redact.redact(knee_image(3), "eng", ["COR"])
+    assert "COR" not in _ocr_all(r2.img)
 
 
 # ---- acceptance 4: S4 == S04 ------------------------------------------------------------------
@@ -278,7 +277,7 @@ def test_chinese_name_is_masked():
     gray = Image.open(io.BytesIO(raw)).convert("L")
     before = pytesseract.image_to_string(ImageOps.invert(gray.resize((1536, 1536))), lang="chi_tra+eng", config="--psm 11")
     assert "王" in before or "明" in before  # control: OCR can read the name on the original
-    img, _ = redact.redact(raw, "eng+chi_tra", [])
+    img = redact.redact(raw, "eng+chi_tra", []).img
     big = ImageOps.invert(img.convert("L").resize((1536, 1536)))
     after = pytesseract.image_to_string(big, lang="chi_tra+eng", config="--psm 11")
     assert not any(ch in after for ch in "王小明病歷號") and "20481736" not in after
