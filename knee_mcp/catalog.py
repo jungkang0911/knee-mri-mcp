@@ -89,6 +89,7 @@ def build_index(
     exclude: list[str] | None = None,
     dicom_meta: dict[str, DicomMeta | None] | None = None,
     folder_studies: dict[str, str] | None = None,
+    duplicate_folders: dict[str, str] | None = None,
 ) -> Index:
     """folder_studies maps a folder-name fragment to a forced study id ("匿名化MRI" -> "2025-11-26_unconfirmed")
     for folders whose names cannot be trusted for the date / hospital."""
@@ -97,6 +98,7 @@ def build_index(
     folder_text: dict[tuple[str, str], list[str]] = {}
     modality: dict[tuple[str, str], str] = {}
     excluded = 0
+    duplicates: dict[str, int] = {}
     # DICOM first, so when the same image exists as DICOM and JPEG the DICOM copy is the one kept.
     for f in sorted(files, key=lambda x: (not is_dicom_candidate(x), x.folders, x.name)):
         dicom = is_dicom_candidate(f)
@@ -104,6 +106,10 @@ def build_index(
             continue
         if exclude and any(term in folder for folder in f.folders for term in exclude):
             excluded += 1
+            continue
+        dup = next((sid for frag, sid in (duplicate_folders or {}).items() if any(frag in x for x in f.folders)), None)
+        if dup:
+            duplicates[dup] = duplicates.get(dup, 0) + 1
             continue
         label = _safe_label(f.name, pii_terms)
         if dicom:
@@ -155,6 +161,9 @@ def build_index(
         )
     if excluded:
         issues.append(f"excluded {excluded} files in folders matching KNEE_EXCLUDE_FOLDERS")
+    for sid, n in duplicates.items():
+        issues.append(f"excluded {n} files that are a duplicate copy of study {sid} (KNEE_DUPLICATE_FOLDERS); "
+                      f"they are not a separate exam")
     ordered = sorted(studies.values(), key=lambda s: (s.date, s.hospital))
     return Index(ordered, issues)
 
@@ -171,9 +180,11 @@ class Catalog:
         exclude: list[str] | None = None,
         dicom_loader: Callable[[list[DriveFile]], dict[str, DicomMeta | None]] | None = None,
         folder_studies: dict[str, str] | None = None,
+        duplicate_folders: dict[str, str] | None = None,
     ) -> None:
         self.source = source
         self.folder_studies = folder_studies or {}
+        self.duplicate_folders = duplicate_folders or {}
         self.dicom_loader = dicom_loader
         self.exclude = exclude or []
         self.study_types = study_types
@@ -190,7 +201,8 @@ class Catalog:
             metas = None
             if self.dicom_loader:
                 metas = self.dicom_loader([f for f in files if is_dicom_candidate(f)])
-            self._index = build_index(files, self.study_types, self.pii_terms, self.exclude, metas, self.folder_studies)
+            self._index = build_index(files, self.study_types, self.pii_terms, self.exclude, metas, self.folder_studies,
+                                          self.duplicate_folders)
             self._at = time.monotonic()
             return self._index
 

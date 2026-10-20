@@ -270,3 +270,16 @@ async def test_masking_off_serves_unmasked_quickly(tmp_path, drive):
     assert "masking is DISABLED" in ls.content[0].text
     assert r.content[0].type == "image" and "masked boxes 0" in r.content[1].text and "COR PD" in r.content[1].text
     assert "XIAOMING" in _ocr_all(_png(r.content[0]))  # nothing masked, by design
+
+
+def test_duplicate_folder_is_excluded_and_explained():
+    from knee_mcp.catalog import build_index
+    from knee_mcp.drive import DriveFile
+
+    anon = "日期待確認_匿名化MRI（原標記20251126）"
+    files = [DriveFile(f"a{i}", f"image-{i:05d}.jpg", (anon, "序列-00003"), "t") for i in range(3)]
+    files.append(DriveFile("o1", "2019-03-20_TSGH_RK_S7_I0001.jpg", ("2019-03-20_TSGH_MRI",), "t"))
+    idx = build_index(files, {}, [], [], None, None, {"匿名化MRI": "2019-03-20_TSGH"})
+    assert [st.id for st in idx.studies] == ["2019-03-20_TSGH"]
+    assert idx.issues == ["excluded 3 files that are a duplicate copy of study 2019-03-20_TSGH "
+                          "(KNEE_DUPLICATE_FOLDERS); they are not a separate exam"]

@@ -328,7 +328,7 @@ class KneeService:
         self._inflight_lock = threading.Lock()
         self.catalog = Catalog(
             source, cfg.study_types, cfg.pii_terms, cfg.listing_ttl, cfg.exclude_folders, self._load_dicom_metas,
-            cfg.folder_studies,
+            cfg.folder_studies, cfg.duplicate_folders,
         )
         self.templates = load_templates(cfg.mask_templates)
         self._hosp_index: object = None
