@@ -32,8 +32,8 @@ async def test_contrast_shown_in_listings_and_captions(server, service):
     assert "| SAG FSE T1 +C FS | 有 |" in rows["S12"] and "| Axial T2 FSE FS | 無 |" in rows["S4"]
     assert "contrast" in series.content[0].text.splitlines()[1]
     st_row = next(ln for ln in studies.content[0].text.splitlines() if ln.startswith("2022-05-19_VGHTPE"))
-    assert st_row.endswith("| 1/2 (S12)")
-    assert next(ln for ln in studies.content[0].text.splitlines() if ln.startswith("2019-03-20_TSGH")).endswith("| -")
+    assert "| 1/2 (S12) |" in st_row
+    assert next(ln for ln in studies.content[0].text.splitlines() if ln.startswith("2019-03-20_TSGH")).endswith("| - | -")
     assert "右膝 SAG FSE T1 +C FS（顯影後）" in s12.content[1].text
     assert all("顯影後" not in x.text for x in s4.content if x.type == "text")
     assert "S12 I0001 SAG FSE T1 +C FS（顯影後）" in cmp.content[1].text

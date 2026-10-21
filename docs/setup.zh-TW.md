@@ -22,6 +22,7 @@
 
 - `study` 可以用 `list_studies` 的 study_id（`2019-03-20_TSGH`），或只給日期（`2019-03-20`，當天只有一個檢查時）。
 - `series` 接受 `7`、`"7"`、`"S7"`、`"S07"`，**S4 和 S04 視為同一序列**。
+- **檢查資訊與報告：** `overrides.json` 裡每個 study 可以加 `info` 區塊（儀器、顯影劑、報告日期與內容、臨床時間點、`pairs` 配對序列）。`get_study_info(study)` 會整個列出；`list_studies` 的 info 欄顯示有沒有報告。`pairs` 標示切面位置一一對應的序列（例如顯影前 S4 與顯影後 S13），`compare` 比較這兩組時可以只給一邊的 index。
 - **顯影劑：** 資料夾名稱或影像文字裡的 `+C`、`C+`、`Gd`、`post`、`contrast` 會保留成序列名稱的 `+C`；`list_series` 多一欄 contrast（有／無／?），`list_studies` 顯示該檢查有幾個顯影後序列，說明文字標「（顯影後）」。
 - **左右膝：** 檔名裡的 `RK` 是右膝、`LK` 是左膝。右膝的 study_id 不變（`2019-03-20_TSGH`），左膝加 `_LK`（`2022-06-07_TSGH_LK`）。`list_studies` 有「side」欄，所有說明文字都標「右膝」或「左膝」。`compare` 比較左右膝時會提醒內外側方向相反，加 `mirror: true` 會把第二張左右翻轉。
 - `crop` 為 `[x0, y0, x1, y1]`，以原圖像素計算（原圖尺寸見 `get_slice` 文字裡的 `size`）；`zoom` 範圍 0.25–4。

@@ -37,6 +37,41 @@
           "spacing": 5.3
         }
       }
+    },
+    "2022-05-19_VGHTPE": {
+      "info": {
+        "scanner": "Hospital B, 1.5T",
+        "contrast": "yes, intravenous (S12-S14 post-contrast)",
+        "clinical_context": "between the first and second arthroscopy",
+        "report_date": "2022-06-02",
+        "report": [
+          "Minimal joint effusion; medial plica",
+          "Tiny free-edge defect of the lateral meniscus (Ser 4 Img 13)"
+        ],
+        "pairs": [
+          [
+            "S13",
+            "S4",
+            "same slice positions (axial, post- vs pre-contrast)"
+          ]
+        ],
+        "notes": [
+          "free text shown by get_study_info"
+        ]
+      },
+      "series": {
+        "4": {
+          "plane": "Axial T2 FSE FS",
+          "st": "4",
+          "phase": "pre-contrast"
+        },
+        "13": {
+          "plane": "Axial T1 FS +C",
+          "st": "4",
+          "phase": "post-contrast",
+          "note": "slice positions match S4"
+        }
+      }
     }
   }
 }

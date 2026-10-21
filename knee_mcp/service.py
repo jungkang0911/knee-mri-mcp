@@ -17,6 +17,7 @@ from PIL import Image, ImageOps
 
 from . import dicom, imaging
 from .catalog import Catalog, Series, Slice, Study
+from .naming import normalize_series
 from .config import Config
 from .dicom import DicomMeta, is_dicom_bytes, is_dicom_candidate
 from .drive import DriveFile, DriveSource, FileCache
@@ -371,6 +372,51 @@ class KneeService:
         st = self._study_of(f)
         return bool(st and self.overrides.get("studies", {}).get(st.id, {}).get("no_text"))
 
+    def study_info(self, study: Study) -> dict:
+        """The "info" block of overrides.json for a study: scanner, contrast, report, pairs, notes ({} if none)."""
+        return self.overrides.get("studies", {}).get(study.id, {}).get("info", {})
+
+    def paired_series(self, study: Study, a: int, b: int) -> str | None:
+        """The note of an overrides "pairs" entry linking series a and b (same slice positions), else None."""
+        for pair in self.study_info(study).get("pairs", []):
+            nums = {normalize_series(x) for x in pair[:2]}
+            if nums == {a, b}:
+                return pair[2] if len(pair) > 2 else "same slice positions"
+        return None
+
+    def get_study_info(self, study: str) -> str:
+        """Everything known about a study: the catalog row, overrides info, series table and report text."""
+        st = self.catalog.index().get_study(study)
+        n = sum(len(x.slices) for x in st.series.values())
+        info = self.study_info(st)
+        lines = [f"{st.id}: {st.date}, {st.hospital or 'hospital ?'}, {st.side_label}, {st.kind}, "
+                 f"{len(st.series)} series, {n} images"]
+        for key in ("scanner", "contrast", "clinical_context"):
+            if info.get(key):
+                lines.append(f"{key}: {info[key]}")
+        lines.append("")
+        lines.append(self.list_series(st.id))
+        for se in st.series.values():
+            ovr = self.series_override(st, se)
+            if ovr.get("note") or ovr.get("phase"):
+                extra = ", ".join(x for x in (ovr.get("phase", ""), ovr.get("note", "")) if x)
+                lines.append(f"  S{se.number}: {extra}")
+        if info.get("pairs"):
+            lines.append("")
+            lines.append("paired series (same slice positions; compare may give only one index):")
+            lines.extend(f"- {p[0]} <-> {p[1]}" + (f": {p[2]}" if len(p) > 2 else "") for p in info["pairs"])
+        if info.get("report"):
+            lines.append("")
+            lines.append(f"radiology report ({info.get('report_date', 'date ?')}):")
+            lines.extend(f"{i}. {t}" for i, t in enumerate(info["report"], start=1))
+        if info.get("notes"):
+            lines.append("")
+            lines.extend(f"note: {t}" for t in info["notes"])
+        if not info:
+            lines.append("")
+            lines.append("no extra information for this study (add an \"info\" block to overrides.json)")
+        return "\n".join(lines)
+
     def series_override(self, study: Study, se: Series) -> dict:
         return self.overrides.get("studies", {}).get(study.id, {}).get("series", {}).get(str(se.number), {})
 
@@ -439,12 +485,17 @@ class KneeService:
         if not idx.studies:
             lines = ["No studies found under the configured Drive folder."]
         else:
-            lines = ["study_id | date | hospital | side | type | series | images | contrast series"]
+            lines = ["study_id | date | hospital | side | type | series | images | contrast series | info"]
             for s in idx.studies:
                 n = sum(len(x.slices) for x in s.series.values())
                 with_c = [se.number for se in s.series.values() if has_contrast(self.series_profile(se, s)[0])]
                 c = f"{len(with_c)}/{len(s.series)} (S{', S'.join(map(str, with_c))})" if with_c else "-"
-                lines.append(f"{s.id} | {s.date} | {s.hospital or '-'} | {s.side_label} | {s.kind} | {len(s.series)} | {n} | {c}")
+                info = self.study_info(s)
+                i = ("report " + str(info.get("report_date", "")) if info.get("report") else "notes") if info else "-"
+                lines.append(f"{s.id} | {s.date} | {s.hospital or '-'} | {s.side_label} | {s.kind} | {len(s.series)} | {n} | {c} | {i.strip()}")
+            if any(self.study_info(s) for s in idx.studies):
+                lines.append("")
+                lines.append("get_study_info(study) returns the scanner, contrast, report and series pairing details.")
         if not self.cfg.masking:
             lines.append("")
             lines.append("NOTE: masking is DISABLED (KNEE_MASKING=0); images are served as stored, including any "
@@ -614,9 +665,18 @@ class KneeService:
         """Side by side. mirror=True flips the second image left-right so a left and a right knee share the
         same medial / lateral orientation."""
         refs = []
-        for ref in (a, b):
-            st, se = self._resolve(ref["study"], ref["series"])
-            refs.append((st, se, se.get(int(ref["index"])), ref.get("crop")))
+        resolved = [self._resolve(ref["study"], ref["series"]) for ref in (a, b)]
+        for k, ref in enumerate((a, b)):
+            st, se = resolved[k]
+            index = ref.get("index")
+            if index is None:
+                other_st, other_se = resolved[1 - k]
+                other_index = (b if k == 0 else a).get("index")
+                if other_index is None or other_st is not st or not self.paired_series(st, se.number, other_se.number):
+                    raise KneeError("index is required unless the two series are listed as paired (same slice "
+                                    "positions) in get_study_info for the same study")
+                index = other_index  # paired series: image n <-> image n
+            refs.append((st, se, se.get(int(index)), ref.get("crop")))
         results = self._gather([sl.file for _, _, sl, _ in refs])
         pending = [f"{st.date} I{sl.index:04d}" for (st, _, sl, _), (state, _) in zip(refs, results) if state == "pending"]
         if pending:
@@ -637,6 +697,10 @@ class KneeService:
             labels[1] += " (mirrored)"
         out = imaging.side_by_side(imgs[0], labels[0], imgs[1], labels[1])
         caption = f"left: {labels[0]} | right: {labels[1]}"
+        if refs[0][0] is refs[1][0] and refs[0][1] is not refs[1][1]:
+            note = self.paired_series(refs[0][0], refs[0][1].number, refs[1][1].number)
+            if note:
+                caption += f" | paired series: {note}"
         if refs[0][0].side != refs[1][0].side:
             caption += (" | NOTE: different knees (left vs right): medial and lateral are on opposite sides"
                         + ("; the second image is mirrored so both share the same orientation" if mirror

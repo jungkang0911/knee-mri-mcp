@@ -43,7 +43,7 @@ StudyArg = Annotated[str, Field(description="study_id from list_studies (e.g. 20
 class SliceRef(BaseModel):
     study: str
     series: str | int
-    index: int
+    index: int | None = None  # may be omitted for one side when the two series are paired (see get_study_info)
     crop: list[int] | None = None
 
 
@@ -99,6 +99,11 @@ def build_server(cfg: Config, service: KneeService, provider: OwnerAuthProvider 
     @mcp.tool(description="List series in a study: series number, image count, plane/sequence and SL range read from the overlay.")
     async def list_series(study: StudyArg) -> CallToolResult:
         return await _run(lambda: CallToolResult(content=[TextContent(text=service.list_series(study))]))
+
+    @mcp.tool(description="Everything known about one study: scanner, contrast, radiology report, series details and "
+                          "which series share slice positions (for compare).")
+    async def get_study_info(study: StudyArg) -> CallToolResult:
+        return await _run(lambda: CallToolResult(content=[TextContent(text=service.get_study_info(study))]))
 
     @mcp.tool(description="Thumbnail grid of a whole series in image-number order; each tile is labelled with its image number.")
     async def get_contact_sheet(
