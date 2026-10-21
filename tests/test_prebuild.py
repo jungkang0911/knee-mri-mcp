@@ -31,7 +31,7 @@ def prebuilt(tmp_path, drive):
 def test_manifest_fields_and_incremental(prebuilt, drive):
     cfg, svc, manifest, msgs = prebuilt
     data = json.loads((cfg.cache_dir / "manifest.json").read_text("utf-8"))
-    assert data == manifest and len(data) == 20 + 6 + 2 + 3 + 6
+    assert data == manifest and len(data) == 20 + 6 + 2 + 3 + 6 + 4
     e = next(x for x in data if x["study"] == "2019-03-20_TSGH" and x["index"] == 13)
     assert set(e) == {"study", "series", "index", "plane", "sl", "st", "size", "fileId", "modifiedTime",
                       "masked_path", "redaction_status", "mask_boxes", "review_boxes", "side"}
@@ -222,6 +222,11 @@ def test_plane_from_folder_names():
     assert plane_from_folders(("x", "矢狀面_PD+T2 FSE")) == "SAG PD T2 FSE"
     assert plane_from_folders(("x", "右膝_橫切面_T2脂肪抑制FSE")) == "Axial T2 FS FSE"
     assert plane_from_folders(("x", "冠狀面_3D MERGE")) == "COR 3D MERGE"
+    assert plane_from_folders(("x", "S12_Sag_FSE_T1_+C_FS")) == "SAG FSE T1 +C FS"
+    assert plane_from_folders(("x", "S13_AXI__FSE__T1_+C_FS")) == "Axial FSE T1 +C FS"
+    assert plane_from_folders(("x", "S6_COR_PD_FSE_FS")) == "COR PD FSE FS"  # no contrast
+    assert plane_from_folders(("x", "S15_3-plane_Loc")) == "Localizer"
+    assert "+C" not in plane_from_folders(("x", "SAG_T2_series-00000_posterior_effusion"))  # "posterior" is not "post"
     assert plane_from_folders(("x", "序列-010")) == ""
 
 

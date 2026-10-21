@@ -57,6 +57,10 @@ class MockDrive:
             for i in range(1, 4):
                 add(f"2022-06-07_TSGH_LK_S{ser}_I{i:04d}.jpg", ("2022-06-07_左膝MRI（無顯影劑）", f"序列-{ser:03d}"),
                     knee_image(500 + 10 * ser + i, plane="", sl="", st="", pii=False))
+        # 2022-05-19 VGHTPE right knee: one plain and one contrast-enhanced (+C) series, named by folder.
+        for i in (1, 2):
+            add(f"2022-05-19_VGHTPE_RK_S4_I{i:04d}.jpg", ("2022-05-19_VGHTPE", "S4_AXI_T2_FSE_FS"), knee_image(600 + i, plane="", pii=False))
+            add(f"2022-05-19_VGHTPE_RK_S12_I{i:04d}.jpg", ("2022-05-19_VGHTPE", "S12_Sag_FSE_T1_+C_FS"), knee_image(610 + i, plane="", pii=False))
         add("notes.txt", (), b"not an image")
         self._order = list(self.files)
         random.Random(7).shuffle(self._order)

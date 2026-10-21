@@ -41,6 +41,9 @@ SEQ_WORDS = {
     "MERGE", "DIXON", "WATER", "SPGR", "CUBE", "VIBE", "HR", "PROPELLER", "BLADE", "MRI", "MR", "KNEE",
 }
 TECH_KEYS = {"SL", "ST", "TR", "TE", "TI", "ET", "FA", "FOV", "NEX", "THK", "SP", "WW", "WL", "SE", "IM", "KVP"}
+# Contrast-enhanced (post-gadolinium) markers: "+C", "C+", "Gd", "post", "contrast". Kept as the token "+C".
+CONTRAST_RE = re.compile(r"(?<![A-Z0-9])(\+C|C\+|GD|GAD|GADO|POST|POSTCONTRAST|CONTRAST|顯影)(?![A-Z])", re.IGNORECASE)
+CONTRAST_TOKEN = "+C"
 _PLANE = {
     "COR": "COR", "CORONAL": "COR", "SAG": "SAG", "SAGITTAL": "SAG",
     "AX": "Axial", "AXI": "Axial", "AXIAL": "Axial", "TRA": "Axial", "TRANS": "Axial", "TRANSVERSE": "Axial",
@@ -204,6 +207,8 @@ def read_overlay(words: list[Word]) -> Overlay:
         toks = [_norm(w.text) for w in ws]
         parts = [x for t in toks for x in re.split(r"[_/\\]+", t) if x]  # "COR_T2_FS" -> COR T2 FS
         seq = [t for t in parts if t in SEQ_WORDS and t not in {"MRI", "MR", "KNEE"}]
+        if seq and CONTRAST_RE.search(" ".join(parts)):
+            seq.append(CONTRAST_TOKEN)  # "T1 +C FS", "T1 C+", "post Gd" -> contrast-enhanced
         if any(t in _PLANE for t in seq) and len(seq) > len(best):
             best = seq
         joined = " ".join(toks)

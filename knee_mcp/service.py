@@ -22,7 +22,7 @@ from .dicom import DicomMeta, is_dicom_bytes, is_dicom_candidate
 from .drive import DriveFile, DriveSource, FileCache
 from .errors import KneeError, NeedsReview, RedactionFailed
 from .templates import load_templates
-from .redact import REDACTION_VERSION, Overlay, ocr_words, read_overlay, redact
+from .redact import CONTRAST_RE, CONTRAST_TOKEN, REDACTION_VERSION, Overlay, ocr_words, read_overlay, redact
 
 MAX_SLICES = 8
 
@@ -267,7 +267,24 @@ _FOLDER_WORDS = [
     ("COR", "COR"), ("SAG", "SAG"), ("AX", "Axial"),
     ("PD", "PD"), ("T1", "T1"), ("T2", "T2"), ("脂肪抑制", "FS"), ("FS", "FS"), ("FSE", "FSE"), ("TSE", "TSE"),
     ("STIR", "STIR"), ("3D", "3D"), ("MERGE", "MERGE"), ("DESS", "DESS"),
+    ("LOCALIZER", "Localizer"), ("LOC", "Localizer"), ("定位", "Localizer"),
 ]
+
+
+def has_contrast(plane: str) -> bool:
+    return CONTRAST_TOKEN in plane.split()
+
+
+def contrast_label(plane: str) -> str:
+    """有 / 無 / ? for the list_series column."""
+    if not plane or plane == "?":
+        return "?"
+    return "有" if has_contrast(plane) else "無"
+
+
+def plane_display(plane: str) -> str:
+    """Plane for captions: contrast series get an explicit 顯影後 (post-contrast) marker."""
+    return f"{plane}（顯影後）" if has_contrast(plane) else plane
 
 
 def plane_from_folders(folders: tuple[str, ...] | list[str]) -> str:
@@ -281,6 +298,8 @@ def plane_from_folders(folders: tuple[str, ...] | list[str]) -> str:
             if not (word in ("FS", "AX") and name[pos:pos + 3] in ("FSE", "AXI") and token != "Axial"):
                 found.append((pos, token))
             pos = name.find(word.upper(), pos + 1)
+    for m in CONTRAST_RE.finditer(name):
+        found.append((m.start(), CONTRAST_TOKEN))  # "+C" / "C+" / "Gd" / "post": contrast-enhanced
     tokens = list(dict.fromkeys(t for _, t in sorted(found)))
     planes = [t for t in tokens if t in ("COR", "SAG", "Axial")]
     return " ".join(planes[:1] + [t for t in tokens if t not in ("COR", "SAG", "Axial")]) if tokens else ""
@@ -381,7 +400,7 @@ class KneeService:
         plane, sls = self.series_profile(series, study)
         ovr = self.series_override(study, series)
         boxes = len(self.proc.info(sl.file).get("mask_boxes", []))
-        parts = [f"{study.id} S{series.number} I{sl.index:04d}", f"{study.side_label} {plane or ov.plane or 'plane ?'}"]
+        parts = [f"{study.id} S{series.number} I{sl.index:04d}", f"{study.side_label} {plane_display(plane or ov.plane) or 'plane ?'}"]
         parts.append(f"SL {sls[sl.index]}" if sl.index in sls else "SL ?")
         st = str(ovr.get("st") or ov.st or "")
         if ovr.get("spacing"):
@@ -420,10 +439,12 @@ class KneeService:
         if not idx.studies:
             lines = ["No studies found under the configured Drive folder."]
         else:
-            lines = ["study_id | date | hospital | side | type | series | images"]
+            lines = ["study_id | date | hospital | side | type | series | images | contrast series"]
             for s in idx.studies:
                 n = sum(len(x.slices) for x in s.series.values())
-                lines.append(f"{s.id} | {s.date} | {s.hospital or '-'} | {s.side_label} | {s.kind} | {len(s.series)} | {n}")
+                with_c = [se.number for se in s.series.values() if has_contrast(self.series_profile(se, s)[0])]
+                c = f"{len(with_c)}/{len(s.series)} (S{', S'.join(map(str, with_c))})" if with_c else "-"
+                lines.append(f"{s.id} | {s.date} | {s.hospital or '-'} | {s.side_label} | {s.kind} | {len(s.series)} | {n} | {c}")
         if not self.cfg.masking:
             lines.append("")
             lines.append("NOTE: masking is DISABLED (KNEE_MASKING=0); images are served as stored, including any "
@@ -439,7 +460,8 @@ class KneeService:
     def list_series(self, study: str) -> str:
         """Summarized from prebuilt results only: no download, no OCR at request time."""
         st = self.catalog.index().get_study(study)
-        lines = [f"{st.id} ({st.side_label}, {st.kind})", "series | images | I range | plane | SL range | prebuilt | review"]
+        lines = [f"{st.id} ({st.side_label}, {st.kind})",
+                 "series | images | I range | plane | contrast | SL range | prebuilt | review"]
         todo_total = 0
         for se in st.series.values():
             statuses = [self.proc.status(s.file) for s in se.slices]
@@ -450,7 +472,7 @@ class KneeService:
             sl_range = f"{min(vals):g} .. {max(vals):g}" if len(vals) >= 2 else (f"{vals[0]:g}" if vals else "?")
             lines.append(
                 f"S{se.number} | {len(se.slices)} | I{se.slices[0].index:04d}-I{se.slices[-1].index:04d}"
-                f" | {plane or '?'} | {sl_range} | {done}/{len(se.slices)} | {statuses.count('review')}"
+                f" | {plane or '?'} | {contrast_label(plane)} | {sl_range} | {done}/{len(se.slices)} | {statuses.count('review')}"
             )
         if todo_total:
             lines.append(f"{todo_total} images not prebuilt yet; plane/SL fill in as `python -m knee_mcp.prebuild` runs")
@@ -531,7 +553,7 @@ class KneeService:
             tiles.append((f"I{s.index:04d}", img))
         sheet = imaging.contact_sheet(tiles, cols)
         plane, _ = self.series_profile(se, st)
-        caption = (f"{st.id} S{se.number} ({st.side_label}{' ' + plane if plane else ''}): {len(tiles)} images, "
+        caption = (f"{st.id} S{se.number} ({st.side_label}{' ' + plane_display(plane) if plane else ''}): {len(tiles)} images, "
                    f"I{se.slices[0].index:04d}-I{se.slices[-1].index:04d}")
         withheld = sum(1 for state, _ in results if state in ("withheld", "error"))
         pending = sum(1 for state, _ in results if state == "pending")
@@ -609,7 +631,7 @@ class KneeService:
             plane, _ = self.series_profile(se, st)
             imgs.append(imaging.apply_crop(img, crop))
             labels.append(" ".join(x for x in (st.date, st.hospital, st.side_label, f"S{se.number}", f"I{sl.index:04d}",
-                                               plane or ov.plane) if x))
+                                               plane_display(plane or ov.plane)) if x))
         if mirror:
             imgs[1] = ImageOps.mirror(imgs[1])
             labels[1] += " (mirrored)"
